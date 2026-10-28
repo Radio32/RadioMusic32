@@ -1,6 +1,6 @@
-# Radio Music (Custom 3-Voice Firmware Build)
+# RadioMusic32 (Custom 3-Voice Firmware Build)
 
-This repository is based on the original [Tom Whitwell Radio Music project](https://github.com/TomWhitwell/RadioMusic), with a custom firmware profile focused on:
+This repository is based on the original [Tom Whitwell Radio Music project](https://github.com/TomWhitwell/RadioMusic), with the **RadioMusic32** custom firmware profile focused on:
 
 - 3 trigger inputs -> 3 sample voices
 - 12-bit lo-fi character

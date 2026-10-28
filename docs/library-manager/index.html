@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RadioMusic32 Library Manager</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>RadioMusic32 Library Manager</h1>
+      <p>Build an SD-ready ZIP with folders <code>1/</code>, <code>2/</code>, <code>3/</code>. Files are converted to mono 16-bit 32k WAV and auto-named <code>01.wav</code> to <code>16.wav</code>.</p>
+    </header>
+
+    <section class="folders" id="folders"></section>
+
+    <section class="processing">
+      <h2>Conversion options</h2>
+      <label><input type="checkbox" id="trimToggle" checked> Trim silence at start/end</label>
+      <label><input type="checkbox" id="normalizeToggle" checked> Normalize level before export</label>
+    </section>
+
+    <section class="actions">
+      <button id="downloadZip">Convert & Download ZIP</button>
+      <button id="clearAll" class="secondary">Clear All</button>
+    </section>
+
+    <section class="status">
+      <progress id="progress" max="100" value="0"></progress>
+      <p id="statusText">Ready.</p>
+    </section>
+
+    <section class="report">
+      <h2>Export report</h2>
+      <p class="hint" id="reportSummary">No export report yet.</p>
+      <div class="report-table-wrap">
+        <table class="report-table">
+          <thead>
+            <tr>
+              <th>Folder</th>
+              <th>Slot</th>
+              <th>Source file</th>
+              <th>Duration (s)</th>
+              <th>Peak before</th>
+              <th>Peak after</th>
+              <th>Warnings</th>
+            </tr>
+          </thead>
+          <tbody id="reportBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="./manager.js"></script>
+</body>
+</html>
