@@ -19,7 +19,14 @@ private:
 	volatile uint8_t decimation = 2;
 
 	uint8_t holdCounter = 0;
-	int16_t heldSample = 0;
+	int16_t heldSample  = 0;
+
+	// Fixed reconstruction LP filter — single-pole IIR, fc ≈ 15 kHz @ 44.1 kHz
+	// Cleans quantisation/decimation artefacts, matches S950 bandwidth.
+	// α = exp(−2π × 15000 / 44100) ≈ 0.1181
+	static constexpr float LP_ALPHA = 0.1181f;
+	static constexpr float LP_BETA  = 1.0f - LP_ALPHA;
+	float lpState = 0.0f;
 };
 
 #endif

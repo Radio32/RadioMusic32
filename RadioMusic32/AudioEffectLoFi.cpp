@@ -73,11 +73,17 @@ void AudioEffectLoFi::update(void) {
 			sample = (int16_t) s;
 		}
 
-		out->data[i] = sample;
+		// Reconstruction LP — removes harshest aliasing, preserves S950 character
+		float filtered = LP_BETA * (float)sample + LP_ALPHA * lpState;
+		lpState = filtered;
+		int32_t s = (int32_t)filtered;
+		if (s >  32767) s =  32767;
+		if (s < -32768) s = -32768;
+		out->data[i] = (int16_t)s;
 	}
 
 	holdCounter = counter;
-	heldSample = sampleHold;
+	heldSample  = sampleHold;
 
 	transmit(out);
 	release(out);
