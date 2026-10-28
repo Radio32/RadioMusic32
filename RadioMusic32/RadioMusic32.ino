@@ -1,9 +1,31 @@
 /*
  RadioMusic32
  2-voice sample player for Eurorack
- Voice 1 : pure sample player   — triggered by Reset CV (interrupt)
- Voice 2 : chromatic V/oct      — triggered by Channel CV, pitched by Time CV
- Banks A–P, 16 files per voice per bank
+
+ Voice 1 : pure sample player — triggered by Reset CV (interrupt)
+ Voice 2 : chromatic V/oct    — triggered by Channel CV, pitched by Time CV
+
+ Normal mode
+   Channel pot  → global sample index (0–15), shown binary on LEDs
+   Short press  → cycle selected voice (LED 1 or 2 lit)
+   Long hold    → enter setup mode
+
+ Bank select
+   Hold button while pot scrolls → bank A–P shown binary
+   Release before 1.5s           → confirm bank, return to normal
+
+ Setup mode  (entered via 1.5s hold from normal or bank-select)
+   Short press  → cycle page 0–5
+   Long hold    → exit back to normal
+
+   Page 0  LED 1 solid    Voice 1 volume (chan) + decay (time)
+   Page 1  LED 2 solid    Voice 2 volume (chan) + decay (time)
+   Page 2  LED 3 solid    Voice 1 filter cutoff (chan) + resonance (time)
+   Page 3  LED 4 solid    Voice 2 filter cutoff (chan) + resonance (time)
+   Page 4  LED 1 blink    Lo-fi sample rate (chan) + enable (time)
+   Page 5  LED 2 blink    V/oct span (chan) + root trim (time)
+
+ Auto-audition on pages 0–3 when a pot moves.
 */
 
 #include <Bounce2.h>
@@ -31,10 +53,10 @@
 
 // ─── timing ──────────────────────────────────────────────────────────────────
 #define SHORT_PRESS_MS    10
-#define LONG_PRESS_MS   1500   // long hold → setup mode; also bank-select limit
+#define LONG_PRESS_MS   1500
 #define CTRL_UPDATE_MS    20
 #define AUDITION_MS      150
-#define BLINK_MS         200   // LED blink period for pages 4–5
+#define BLINK_MS         200
 
 // ─── trigger thresholds ──────────────────────────────────────────────────────
 #define TRIG_HIGH  2300
@@ -44,16 +66,10 @@
 #define EEPROM_BANK_ADDR 0
 
 // ─── defaults ────────────────────────────────────────────────────────────────
-#define DEFAULT_LOFI_RATE   32000
-#define VOCT_SEMITONES         48   // ±2 octave span (tunable on page 5)
+#define DEFAULT_LOFI_RATE  32000
+#define VOCT_SEMITONES        48
 
 // ─── setup pages ─────────────────────────────────────────────────────────────
-//  0  Voice 1 volume + decay
-//  1  Voice 2 volume + decay
-//  2  Voice 1 filter cutoff + resonance
-//  3  Voice 2 filter cutoff + resonance
-//  4  Lo-fi sample rate + enable/disable       ← LEDs blink
-//  5  V/oct span + root trim                  ← LEDs blink
 #define SETUP_PAGES  6
 
 // ─── objects ─────────────────────────────────────────────────────────────────
@@ -67,35 +83,36 @@ enum Mode { MODE_NORMAL, MODE_BANK_SELECT, MODE_SETUP };
 Mode currentMode = MODE_NORMAL;
 
 // ─── button ──────────────────────────────────────────────────────────────────
-elapsedMillis buttonTimer     = 0;
-bool          buttonHeld      = false;
+elapsedMillis buttonTimer      = 0;
+bool          buttonHeld       = false;
 bool          longPressHandled = false;
 
 // ─── triggers ────────────────────────────────────────────────────────────────
 volatile bool resetTrigPending = false;
 bool          chanCvHigh       = false;
 
-// ─── bank / sample ───────────────────────────────────────────────────────────
-uint8_t selectedBank      = 0;
+// ─── bank / voice / sample ───────────────────────────────────────────────────
+uint8_t selectedBank      = 0;        // 0–15 = A–P
 bool    bankSelectChanged = false;
-uint8_t globalSampleIndex = 0;   // 0–15, stepped by short press
+uint8_t globalSampleIndex = 0;        // 0–15, drives both voices
+uint8_t selectedVoice     = 0;        // 0 or 1 — indicated by single LED in normal mode
 
 // ─── voice params ────────────────────────────────────────────────────────────
 float    voiceVolume[VOICE_COUNT]       = {0.85f, 0.85f};
-uint16_t voiceDecayMs[VOICE_COUNT]      = {350, 350};
-bool     voiceOneShot[VOICE_COUNT]      = {false, false};
+uint16_t voiceDecayMs[VOICE_COUNT]      = {350,   350  };
+bool     voiceOneShot[VOICE_COUNT]      = {false, false };
 float    voiceFilterCutoff[VOICE_COUNT] = {8000.0f, 8000.0f};
-float    voiceFilterRes[VOICE_COUNT]    = {0.9f, 0.9f};
+float    voiceFilterRes[VOICE_COUNT]    = {0.9f,    0.9f   };
 
 // ─── lo-fi / V/oct ───────────────────────────────────────────────────────────
-uint16_t lofiSampleRate  = DEFAULT_LOFI_RATE;
-bool     lofiEnabled     = true;
-int      voctSemitones   = VOCT_SEMITONES;
-float    voctRootOffset  = 0.0f;
-float    currentVoct     = 1.0f;
-int      prevVoctAdc     = -1;
+uint16_t lofiSampleRate = DEFAULT_LOFI_RATE;
+bool     lofiEnabled    = true;
+int      voctSemitones  = VOCT_SEMITONES;
+float    voctRootOffset = 0.0f;
+float    currentVoct    = 1.0f;
+int      prevVoctAdc    = -1;
 
-// ─── setup UI ────────────────────────────────────────────────────────────────
+// ─── UI helpers ──────────────────────────────────────────────────────────────
 uint8_t       setupPage   = 0;
 elapsedMillis auditTimer  = 0;
 elapsedMillis ctrlTimer   = 0;
@@ -152,26 +169,16 @@ void applyVoiceParams(uint8_t v) {
 // ─── LEDs ────────────────────────────────────────────────────────────────────
 void updateLEDs() {
     if (currentMode == MODE_SETUP) {
-        // Pages 0–3: solid LED at page position
-        // Pages 4–5: LED blinks at position (page - 4)
         bool extended = (setupPage >= 4);
-
-        if (blinkTimer >= BLINK_MS) {
-            blinkTimer = 0;
-            blinkState = !blinkState;
-        }
+        if (blinkTimer >= BLINK_MS) { blinkTimer = 0; blinkState = !blinkState; }
 
         if (!extended) {
-            ledControl.single(setupPage);
-            ledControl.showReset(true);
+            ledControl.single(setupPage);       // LED 1-4 solid for pages 0-3
         } else {
-            if (blinkState) {
-                ledControl.single(setupPage - 4);
-            } else {
-                ledControl.multi(0);          // all off
-            }
-            ledControl.showReset(true);
+            if (blinkState) ledControl.single(setupPage - 4);
+            else            ledControl.multi(0);
         }
+        ledControl.showReset(true);
         return;
     }
 
@@ -181,8 +188,8 @@ void updateLEDs() {
         return;
     }
 
-    // Normal: top LEDs = sample index in binary, reset LED off
-    ledControl.multi(globalSampleIndex & 0x0F);
+    // Normal: single LED = selected voice (1 or 2)
+    ledControl.single(selectedVoice);
     ledControl.showReset(false);
 }
 
@@ -191,18 +198,20 @@ void handleButton() {
     resetBtn.update();
 
     if (resetBtn.rose()) {
-        buttonTimer      = 0;
-        buttonHeld       = true;
-        longPressHandled = false;
+        buttonTimer       = 0;
+        buttonHeld        = true;
+        longPressHandled  = false;
         bankSelectChanged = false;
-        // Entering bank-select starts immediately on press
+        // Immediately enter bank-select while held
         if (currentMode == MODE_NORMAL) currentMode = MODE_BANK_SELECT;
     }
 
-    // Long hold → enter setup (from bank-select) or exit setup
+    // Long hold → enter/exit setup
     if (buttonHeld && !longPressHandled && buttonTimer >= LONG_PRESS_MS) {
         longPressHandled = true;
         if (currentMode == MODE_BANK_SELECT) {
+            // Save bank if changed, then go to setup
+            if (bankSelectChanged) EEPROM.write(EEPROM_BANK_ADDR, selectedBank);
             currentMode = MODE_SETUP;
             setupPage   = 0;
             prevChanPot = -1;
@@ -213,10 +222,9 @@ void handleButton() {
     }
 
     if (resetBtn.fell()) {
-        buttonHeld = false;
         if (!longPressHandled && buttonTimer >= SHORT_PRESS_MS) {
             if (currentMode == MODE_BANK_SELECT) {
-                // Confirm bank and return to normal
+                // Short release: confirm bank, return to normal
                 if (bankSelectChanged) EEPROM.write(EEPROM_BANK_ADDR, selectedBank);
                 currentMode = MODE_NORMAL;
 
@@ -227,17 +235,11 @@ void handleButton() {
                 prevTimePot = -1;
 
             } else {
-                // Normal mode: step sample index forward
-                uint8_t maxIdx = 0;
-                for (uint8_t v = 0; v < VOICE_COUNT; v++) {
-                    if (fileScanner.numFiles[selectedBank][v] > maxIdx)
-                        maxIdx = fileScanner.numFiles[selectedBank][v];
-                }
-                if (maxIdx > 0) {
-                    globalSampleIndex = (globalSampleIndex + 1) % maxIdx;
-                }
+                // Normal: cycle selected voice
+                selectedVoice = (selectedVoice + 1) % VOICE_COUNT;
             }
         }
+        buttonHeld       = false;
         buttonTimer      = 0;
         longPressHandled = false;
     }
@@ -259,7 +261,7 @@ void updateTriggers() {
     }
 }
 
-// ─── V/oct continuous read ───────────────────────────────────────────────────
+// ─── V/oct continuous ────────────────────────────────────────────────────────
 void updateVoct() {
     int raw = analogRead(TIME_CV_PIN);
     if (prevVoctAdc < 0 || abs(raw - prevVoctAdc) > 16) {
@@ -280,17 +282,17 @@ void updateControls() {
     bool chanChanged = (prevChanPot < 0 || abs(chanPot - prevChanPot) > 40);
     bool timeChanged = (prevTimePot < 0 || abs(timePot - prevTimePot) > 40);
 
-    // Bank select: pot scrolls through banks while button held
     if (currentMode == MODE_BANK_SELECT) {
-        uint8_t nb = (uint8_t)mapf(chanPot, 0, ADC_MAX_VALUE - 1, 0, BANKS - 1);
+        uint8_t nb = (uint8_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 0, BANKS-1);
         if (nb != selectedBank) { selectedBank = nb; bankSelectChanged = true; }
         prevChanPot = chanPot;
         prevTimePot = timePot;
         return;
     }
 
-    // Normal: pot updates sample index live (complementary to short press)
     if (currentMode == MODE_NORMAL) {
+        // Pot selects global sample index for both voices
+        globalSampleIndex = (uint8_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 0, MAX_FILES_PER_SLOT-1);
         prevChanPot = chanPot;
         prevTimePot = timePot;
         return;
@@ -325,24 +327,25 @@ void updateControls() {
                 audioEngine.setVoiceFilter(1, voiceFilterCutoff[1], voiceFilterRes[1]);
                 break;
 
-            case 4:  // Lo-fi: sample rate + enable
+            case 4:  // Lo-fi
                 lofiSampleRate = (uint16_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 8000.0f, 32000.0f);
                 lofiEnabled    = timePot > 96;
                 audioEngine.setLofiEnabled(lofiEnabled);
                 audioEngine.setLofiSampleRate(lofiSampleRate);
                 break;
 
-            case 5:  // V/oct: span + root trim
+            case 5:  // V/oct calibration
                 voctSemitones  = (int)mapf(chanPot, 0, ADC_MAX_VALUE-1, 24.0f, 96.0f);
                 voctRootOffset = mapf(timePot, 0, ADC_MAX_VALUE-1, -12.0f, 12.0f);
-                currentVoct    = calculateVoct(prevVoctAdc >= 0 ? prevVoctAdc : ADC_MAX_VALUE / 2);
+                currentVoct    = calculateVoct(prevVoctAdc >= 0 ? prevVoctAdc : ADC_MAX_VALUE/2);
                 audioEngine.setVoicePlaybackSpeed(1, currentVoct);
                 break;
         }
 
-        // Auto-audition on pages 0–3 while turning a pot
+        // Auto-audition on per-voice pages while pot moves
         if ((chanChanged || timeChanged) && auditTimer >= AUDITION_MS && setupPage < 4) {
             auditTimer = 0;
+            // Pages 0-1 → voice 0-1, pages 2-3 → filter change on voice 0-1
             triggerVoice(setupPage < 2 ? setupPage : setupPage - 2);
         }
     }
@@ -371,7 +374,7 @@ void setup() {
     uint8_t saved = EEPROM.read(EEPROM_BANK_ADDR);
     if (saved < BANKS) selectedBank = saved;
 
-    // Ensure selected bank has at least something; otherwise find first with files
+    // Find a bank with files if saved one is empty
     bool found = false;
     for (uint8_t v = 0; v < VOICE_COUNT && !found; v++)
         if (fileScanner.numFiles[selectedBank][v] > 0) found = true;
