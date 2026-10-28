@@ -234,6 +234,28 @@ void Settings::applySetting(String settingName, String settingValue) {
 		loopMode = settingValue.toInt();
 	}
 
+	if(settingName.equalsIgnoreCase("lofi12bit")) {
+		lofi12bit = toBoolean(settingValue);
+	}
+
+	if(settingName.equalsIgnoreCase("lofiSampleRate")) {
+		lofiSampleRate = settingValue.toInt();
+		if(lofiSampleRate < 4000) lofiSampleRate = 4000;
+		if(lofiSampleRate > 44100) lofiSampleRate = 44100;
+	}
+
+	if(settingName.equalsIgnoreCase("lofiLowPassCutoff")) {
+		lofiLowPassCutoff = toFloat(settingValue);
+		if(lofiLowPassCutoff < 200.0) lofiLowPassCutoff = 200.0;
+		if(lofiLowPassCutoff > 16000.0) lofiLowPassCutoff = 16000.0;
+	}
+
+	if(settingName.equalsIgnoreCase("lofiLowPassResonance")) {
+		lofiLowPassResonance = toFloat(settingValue);
+		if(lofiLowPassResonance < 0.7) lofiLowPassResonance = 0.7;
+		if(lofiLowPassResonance > 4.5) lofiLowPassResonance = 4.5;
+	}
+
 	if(settingName.equalsIgnoreCase("quantiseNoteCV") || settingName.equalsIgnoreCase("quantizeRootCV")) {
 		quantiseRootCV = toBoolean(settingValue);
 	}
@@ -245,7 +267,7 @@ void Settings::applySetting(String settingName, String settingValue) {
 
 // converting string to Float
 float Settings::toFloat(String settingValue) {
-	char floatbuf[settingValue.length()];
+	char floatbuf[settingValue.length() + 1];
 	settingValue.toCharArray(floatbuf, sizeof(floatbuf));
 	float f = atof(floatbuf);
 	return f;
@@ -293,6 +315,14 @@ void Settings::write() {
 	settingsFile.println(sort);
 	settingsFile.print("pitchMode=");
 	settingsFile.println(pitchMode);
+	settingsFile.print("lofi12bit=");
+	settingsFile.println(lofi12bit);
+	settingsFile.print("lofiSampleRate=");
+	settingsFile.println(lofiSampleRate);
+	settingsFile.print("lofiLowPassCutoff=");
+	settingsFile.println(lofiLowPassCutoff);
+	settingsFile.print("lofiLowPassResonance=");
+	settingsFile.println(lofiLowPassResonance);
 	// close the file:
 	settingsFile.close();
 }

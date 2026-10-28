@@ -19,8 +19,9 @@
 #define SAMPLE_RATE_44  	2 // 010
 #define SAMPLE_RATE_48  	3 // 011
 #define SAMPLE_RATE_96  	4 // 100
+#define SAMPLE_RATE_32  	5 // 101
 
-static uint32_t SAMPLE_RATES[5] = { 11025,22050,44100,48000,96000 };
+static uint32_t SAMPLE_RATES[6] = { 11025,22050,44100,48000,96000,32000 };
 static uint8_t BIT_DEPTHS[4] = {8,16,24,32};
 
 class AudioFileInfo {
@@ -65,6 +66,8 @@ public:
 
 			if(m == 3) m = 2;
 			format |= m << 3;
+		} else if(sampleRate == 32000) {
+			format |= SAMPLE_RATE_32 << 3;
 		} else if(sampleRate % 48000 == 0) {
 			if(sampleRate / 48000 == 1) {
 				format |= 3 << 3;

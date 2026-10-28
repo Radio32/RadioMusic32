@@ -31,4 +31,46 @@ extensionless files in the root and assume they are 24/96 tip top format files.
 
 It will only scan 128 of the files because of our bank / file limit.
 
+Lo-fi Output Mode
+-----------------
 
+This firmware now supports an S950-style lo-fi output stage:
+
+- `lofi12bit=1` enables 12-bit quantisation plus decimation before the filter.
+- `lofiSampleRate=22050` sets the target sample-rate for the lo-fi decimation stage.
+- `lofiLowPassCutoff=7000` sets the low-pass filter cutoff frequency in Hz.
+- `lofiLowPassResonance=1.2` sets the low-pass resonance (roughly 0.7 to 4.5).
+
+Set `lofi12bit=0` to disable the lo-fi stage.
+
+3 Voice Trigger Mode
+--------------------
+
+This firmware now runs as a 3-trigger, 3-voice sample player:
+
+- Voice 1 trigger: RESET CV input
+- Voice 2 trigger: CHANNEL CV input
+- Voice 3 trigger: TIME CV input
+
+Button behavior:
+
+- Short press: select voice 1/2/3 (normal mode)
+- Long press: enter/exit setup mode
+- In setup mode, short press cycles setup pages (4 pages shown on top LEDs)
+
+Setup pages:
+
+1. Sample select + volume (selected voice)
+2. Decay + one-shot mode (selected voice)
+3. Master low-pass cutoff + resonance
+4. Lo-fi sample rate + lo-fi enable/disable
+
+Folder and file handling (custom firmware profile)
+--------------------------------------------------
+
+- Use exactly three SD folders at root: `1`, `2`, `3`
+- Folder `1` feeds voice 1, folder `2` feeds voice 2, folder `3` feeds voice 3
+- Max 16 files per folder
+- Preferred format: mono 16-bit 32k WAV
+- In normal mode, the channel pot selects global sample index `0..15`
+- Top LEDs show this index in binary

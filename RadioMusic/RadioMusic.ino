@@ -1,433 +1,335 @@
 /*
- RADIO MUSIC
- https://github.com/TomWhitwell/RadioMusic
- 
- Audio out: Onboard DAC, teensy3.1 pin A14/DAC
- 
- Bank Button: 2
- Bank LEDs 3,4,5,6
- Reset Button: 8  
- Reset LED 11 
- Reset CV input: 9 
- Channel Pot: A9 
- Channel CV: A8 // check 
- Time Pot: A7 
- Time CV: A6 // check 
- SD Card Connections: 
- SCLK 14
- MISO 12
- MOSI 7 
- SS   10 
- 
- NB: Compile using modified versions of: 
- SD.cpp (found in the main Arduino package) 
- play_sd_raw.cpp  - In Teensy Audio Library 
- play_sc_raw.h    - In Teensy Audio Library 
- 
- from:https://github.com/TomWhitwell/RadioMusic/tree/master/Collateral/Edited%20teensy%20files
+ RadioMusic32 custom firmware
+ - 3 trigger inputs -> 3 sample voices
+ - SD folders 1, 2, 3 map to voice 1, 2, 3
+ - Max 16 files per folder, 16-bit mono 32k WAV target
+ - 12-bit lo-fi stage + resonant low-pass filter
+*/
 
- Additions and changes:
- 2016 by Jouni Stenroos - jouni.stenroos@iki.fi 
- - New bank change mode
- - Removing 330 file limit
- - Improving reset
- - File sorting
- - Audio crossfade
- - Some refactoring and organization of code.
- 
- */
-#include <EEPROM.h>
+#include <Bounce2.h>
 #include <SPI.h>
 #include <SD.h>
 #include <Wire.h>
-#include "RadioMusic.h"
+
 #include "AudioSystemHelpers.h"
-#include "Settings.h"
-#include "LedControl.h"
-#include "FileScanner.h"
 #include "AudioEngine.h"
-#include "Interface.h"
-#include "PlayState.h"
+#include "FileScanner.h"
+#include "LedControl.h"
+#include "RadioMusic.h"
+#include "Settings.h"
 
-#ifdef DEBUG
-#define D(x) x
-#else
-#define D(x)
-#endif
+#define CHAN_POT_PIN A9
+#define CHAN_CV_PIN A6
+#define TIME_POT_PIN A7
+#define TIME_CV_PIN A8
+#define RESET_BUTTON 8
+#define RESET_CV 9
+#define SHORT_PRESS_DURATION 10
+#define LONG_PRESS_DURATION 600
+#define ADC_BITS 13
+#define ADC_MAX_VALUE (1 << ADC_BITS)
 
-// Press reset button to reboot
-//#define RESET_TO_REBOOT
-//#define ENGINE_TEST
+#define MAX_FILES_PER_FOLDER 16
+#define FOLDER_COUNT 3
+#define CONTROL_UPDATE_MS 25
+#define AUDITION_INTERVAL_MS 130
 
-#define EEPROM_BANK_SAVE_ADDRESS 0
-
-#define FLASHTIME 	10  	// How long do LEDs flash for?
-#define SHOWFREQ 	250 	// how many millis between serial Debug updates
-
-#define peakFPS 30   //  FRAMERATE FOR PEAK METER
-
-#define SD_CARD_CHECK_DELAY 20
-
-// //////////
-// TIMERS
-// //////////
-
-elapsedMillis showDisplay;
-elapsedMillis resetLedTimer = 0;
-elapsedMillis ledFlashTimer = 0;
-
-elapsedMillis meterDisplayDelayTimer; // Counter to hide MeterDisplay after bank change
-elapsedMillis peakDisplayTimer; // COUNTER FOR PEAK METER FRAMERATE
-
-
-int prevBankTimer = 0;
-boolean flashLeds = false;
-boolean bankChangeMode = false;
-File settingsFile;
+#define CHANNEL_TRIG_HIGH 2300
+#define CHANNEL_TRIG_LOW 1700
+#define TIME_TRIG_HIGH 2300
+#define TIME_TRIG_LOW 1700
 
 Settings settings("SETTINGS.TXT");
 LedControl ledControl;
 FileScanner fileScanner;
 AudioEngine audioEngine;
-Interface interface;
-PlayState playState;
 
-int NO_FILES = 0;
-uint8_t noFilesLedIndex = 0;
+Bounce resetButtonBounce;
+elapsedMillis buttonTimer = 0;
+bool buttonHeld = false;
+bool longPressHandled = false;
 
-uint8_t rebootCounter = 0;
+volatile bool resetTrigPending = false;
+bool channelTrigHigh = false;
+bool timeTrigHigh = false;
 
-void setup() {
+elapsedMillis controlPoll = 0;
+elapsedMillis auditionTimer = 0;
 
-#ifdef DEBUG_STARTUP
-	while( !Serial );
-	Serial.println("Starting");
-#endif // DEBUG_STARTUP
+bool setupMode = false;
+uint8_t setupPage = 0;
+uint8_t globalSampleIndex = 0;
 
-	ledControl.init();
-	ledControl.single(playState.bank);
+AudioFileInfo* voiceFiles[FOLDER_COUNT][MAX_FILES_PER_FOLDER];
+uint8_t voiceFileCount[FOLDER_COUNT] = {0, 0, 0};
+uint16_t totalAcceptedFiles = 0;
 
-	// SD CARD SETTINGS FOR AUDIO SHIELD
+float voiceVolume[VOICE_COUNT] = {0.85, 0.85, 0.85};
+uint16_t voiceDecayMs[VOICE_COUNT] = {350, 350, 350};
+bool voiceOneShot[VOICE_COUNT] = {false, false, false};
+
+float masterFilterCutoff = 7000.0;
+float masterFilterResonance = 1.2;
+
+int prevChannelPot = -1;
+int prevTimePot = -1;
+
+float mapf(float x, float inMin, float inMax, float outMin, float outMax) {
+	if (x < inMin) x = inMin;
+	if (x > inMax) x = inMax;
+	float ratio = (x - inMin) / (inMax - inMin);
+	return outMin + (ratio * (outMax - outMin));
+}
+
+int readAverage(uint8_t pin, uint8_t samples) {
+	int32_t sum = 0;
+	for (uint8_t i = 0; i < samples; i++) {
+		sum += analogRead(pin);
+	}
+	return (int)(sum / samples);
+}
+
+void resetcvVoice1() {
+	resetTrigPending = true;
+}
+
+bool openSDCard() {
 	SPI.setMOSI(7);
 	SPI.setSCK(14);
+	return SD.begin(SS);
+}
 
-	boolean hasSD = openSDCard();
-	if(!hasSD) {
-		Serial.println("Rebooting");
+bool hasPrefix(const String& name, const String& prefix) {
+	return name.startsWith(prefix);
+}
+
+bool isAcceptedFormat(AudioFileInfo& fileInfo) {
+	return fileInfo.getChannels() == 1 &&
+		   fileInfo.getBytesPerSample() == 2 &&
+		   fileInfo.getSampleRate() == 32000;
+}
+
+void assignVoiceFiles() {
+	for (int i = 0; i < FOLDER_COUNT; i++) {
+		voiceFileCount[i] = 0;
+		for (int j = 0; j < MAX_FILES_PER_FOLDER; j++) {
+			voiceFiles[i][j] = NULL;
+		}
+	}
+	totalAcceptedFiles = 0;
+
+	for (int bank = 0; bank <= fileScanner.lastBankIndex; bank++) {
+		int count = fileScanner.numFilesInBank[bank];
+		for (int i = 0; i < count; i++) {
+			AudioFileInfo* info = &fileScanner.fileInfos[bank][i];
+			if (!isAcceptedFormat(*info)) continue;
+
+			int voice = -1;
+			if (hasPrefix(info->name, "1/")) voice = 0;
+			else if (hasPrefix(info->name, "2/")) voice = 1;
+			else if (hasPrefix(info->name, "3/")) voice = 2;
+
+			if (voice < 0) continue;
+			if (voiceFileCount[voice] >= MAX_FILES_PER_FOLDER) continue;
+
+			voiceFiles[voice][voiceFileCount[voice]] = info;
+			voiceFileCount[voice]++;
+			totalAcceptedFiles++;
+		}
+	}
+}
+
+void triggerVoice(uint8_t voice) {
+	if (voice >= VOICE_COUNT) return;
+	if (voiceFileCount[voice] == 0) return;
+
+	uint8_t index = globalSampleIndex;
+	if (index >= voiceFileCount[voice]) {
+		index = voiceFileCount[voice] - 1;
+	}
+	AudioFileInfo* fileInfo = voiceFiles[voice][index];
+	if (fileInfo == NULL) return;
+	audioEngine.triggerVoice(voice, fileInfo);
+}
+
+void applyVoiceParameters(uint8_t voice) {
+	audioEngine.setVoiceVolume(voice, voiceVolume[voice]);
+	audioEngine.setVoiceDecayMs(voice, voiceDecayMs[voice], voiceOneShot[voice]);
+}
+
+void triggerVoiceForPage(uint8_t page) {
+	if (page < 3) {
+		triggerVoice(page);
+	}
+}
+
+void updateLEDs() {
+	if (setupMode) {
+		ledControl.single(setupPage % 4);
+		ledControl.showReset(true);
+		return;
+	}
+
+	ledControl.showReset(false);
+	ledControl.multi(globalSampleIndex & 0x0F);
+}
+
+void handleButton() {
+	resetButtonBounce.update();
+
+	if (resetButtonBounce.rose()) {
+		buttonTimer = 0;
+		buttonHeld = true;
+		longPressHandled = false;
+	}
+
+	if (buttonHeld && !longPressHandled && buttonTimer >= LONG_PRESS_DURATION) {
+		setupMode = !setupMode;
+		longPressHandled = true;
+		if (setupMode) {
+			setupPage = 0;
+		}
+	}
+
+	if (resetButtonBounce.fell()) {
+		if (!longPressHandled && buttonTimer >= SHORT_PRESS_DURATION) {
+			if (setupMode) {
+				setupPage = (setupPage + 1) % 4;
+			} else {
+				triggerVoice(0);
+				triggerVoice(1);
+				triggerVoice(2);
+			}
+		}
+		buttonHeld = false;
+		buttonTimer = 0;
+		longPressHandled = false;
+	}
+}
+
+void updateTriggers() {
+	if (resetTrigPending) {
+		resetTrigPending = false;
+		triggerVoice(0);
+	}
+
+	int channelCv = analogRead(CHAN_CV_PIN);
+	if (!channelTrigHigh && channelCv >= CHANNEL_TRIG_HIGH) {
+		channelTrigHigh = true;
+		triggerVoice(1);
+	} else if (channelTrigHigh && channelCv <= CHANNEL_TRIG_LOW) {
+		channelTrigHigh = false;
+	}
+
+	int timeCv = analogRead(TIME_CV_PIN);
+	if (!timeTrigHigh && timeCv >= TIME_TRIG_HIGH) {
+		timeTrigHigh = true;
+		triggerVoice(2);
+	} else if (timeTrigHigh && timeCv <= TIME_TRIG_LOW) {
+		timeTrigHigh = false;
+	}
+}
+
+void maybeAudition(bool changed) {
+	if (!changed) return;
+	if (auditionTimer < AUDITION_INTERVAL_MS) return;
+	auditionTimer = 0;
+	triggerVoiceForPage(setupPage);
+}
+
+void updateControls() {
+	if (controlPoll < CONTROL_UPDATE_MS) return;
+	controlPoll = 0;
+
+	int channelPot = readAverage(CHAN_POT_PIN, 12);
+	int timePot = readAverage(TIME_POT_PIN, 12);
+
+	if (!setupMode) {
+		uint8_t index = (uint8_t)mapf(channelPot, 0, ADC_MAX_VALUE - 1, 0, MAX_FILES_PER_FOLDER - 1);
+		globalSampleIndex = index;
+		prevChannelPot = channelPot;
+		prevTimePot = timePot;
+		return;
+	}
+
+	bool channelChanged = prevChannelPot < 0 || abs(channelPot - prevChannelPot) > 40;
+	bool timeChanged = prevTimePot < 0 || abs(timePot - prevTimePot) > 40;
+	bool changed = channelChanged || timeChanged;
+
+	if (setupPage == 0) {
+		voiceVolume[0] = mapf(channelPot, 0, ADC_MAX_VALUE - 1, 0.0, 1.0);
+		voiceDecayMs[0] = (uint16_t)mapf(timePot, 0, ADC_MAX_VALUE - 1, 20.0, 3000.0);
+		voiceOneShot[0] = false;
+		applyVoiceParameters(0);
+	} else if (setupPage == 1) {
+		voiceVolume[1] = mapf(channelPot, 0, ADC_MAX_VALUE - 1, 0.0, 1.0);
+		voiceDecayMs[1] = (uint16_t)mapf(timePot, 0, ADC_MAX_VALUE - 1, 20.0, 3000.0);
+		voiceOneShot[1] = false;
+		applyVoiceParameters(1);
+	} else if (setupPage == 2) {
+		voiceVolume[2] = mapf(channelPot, 0, ADC_MAX_VALUE - 1, 0.0, 1.0);
+		voiceDecayMs[2] = (uint16_t)mapf(timePot, 0, ADC_MAX_VALUE - 1, 20.0, 3000.0);
+		voiceOneShot[2] = false;
+		applyVoiceParameters(2);
+	} else if (setupPage == 3) {
+		masterFilterCutoff = mapf(channelPot, 0, ADC_MAX_VALUE - 1, 300.0, 10000.0);
+		masterFilterResonance = mapf(timePot, 0, ADC_MAX_VALUE - 1, 0.9, 4.0);
+		audioEngine.setMasterFilter(masterFilterCutoff, masterFilterResonance);
+	}
+
+	maybeAudition(changed);
+
+	prevChannelPot = channelPot;
+	prevTimePot = timePot;
+}
+
+void setup() {
+	analogReadRes(ADC_BITS);
+	ledControl.init();
+	ledControl.single(0);
+
+	if (!openSDCard()) {
 		reBoot(0);
 	}
 
-	settings.init(hasSD);
+	settings.init(true);
+	settings.lofi12bit = true;
+	settings.lofiSampleRate = 32000;
+	settings.lofiLowPassCutoff = 7000.0;
+	settings.lofiLowPassResonance = 1.2;
 
 	File root = SD.open("/");
 	fileScanner.scan(&root, settings);
+	assignVoiceFiles();
 
-	getSavedBankPosition();
+	if (totalAcceptedFiles == 0 || voiceFileCount[0] == 0 || voiceFileCount[1] == 0 || voiceFileCount[2] == 0) {
+		reBoot(0);
+	}
 
 	audioEngine.init(settings);
+	audioEngine.setLofiEnabled(true);
+	audioEngine.setLofiSampleRate(32000);
+	audioEngine.setMasterFilter(masterFilterCutoff, masterFilterResonance);
 
-	int numFiles = 0;
-	for(int i=0;i<=fileScanner.lastBankIndex;i++) {
-		numFiles += fileScanner.numFilesInBank[i];
-	}
-	D(Serial.print("File Count ");Serial.println(numFiles););
-
-	if(numFiles == 0) {
-		NO_FILES = 1;
-		D(Serial.println("No files"););
-		ledFlashTimer = 0;
-	} else if(fileScanner.numFilesInBank[playState.bank] == 0) {
-		D(Serial.println("Empty bank"););
-		while(fileScanner.numFilesInBank[playState.bank] == 0) {
-			playState.bank++;
-			if(playState.bank == fileScanner.lastBankIndex) {
-				playState.bank = 0;
-			}
-		}
-		D(Serial.print("Set bank to ");Serial.println(playState.bank););
+	for (uint8_t v = 0; v < VOICE_COUNT; v++) {
+		applyVoiceParameters(v);
 	}
 
-	interface.init(fileScanner.fileInfos[playState.bank][0].size, fileScanner.numFilesInBank[playState.bank], settings, &playState);
+	pinMode(RESET_BUTTON, INPUT);
+	resetButtonBounce.attach(RESET_BUTTON);
+	resetButtonBounce.interval(5);
 
-	D(Serial.println("--READY--"););
-}
-
-void getSavedBankPosition() {
-	// CHECK  FOR SAVED BANK POSITION
-	int a = 0;
-	a = EEPROM.read(EEPROM_BANK_SAVE_ADDRESS);
-	if (a >= 0 && a <= fileScanner.lastBankIndex) {
-		D(
-			Serial.print("Using bank from EEPROM ");
-			Serial.print(a);
-			Serial.print(" . Active banks ");
-			Serial.println(fileScanner.lastBankIndex);
-
-		);
-		playState.bank = a;
-		playState.channelChanged = true;
-	} else {
-		EEPROM.write(EEPROM_BANK_SAVE_ADDRESS, 0);
-	};
-}
-
-boolean openSDCard() {
-	if (!(SD.begin(SS))) {
-
-		Serial.println("No SD.");
-		while (!(SD.begin(SS))) {
-			ledControl.single(15);
-			delay(SD_CARD_CHECK_DELAY);
-			ledControl.single(rebootCounter % 4);
-			delay(SD_CARD_CHECK_DELAY);
-			rebootCounter++;
-			Serial.print("Crash Countdown ");
-			Serial.println(rebootCounter);
-			if (rebootCounter > 4) {
-				return false;
-			}
-		}
-	}
-	return true;
+	pinMode(RESET_CV, INPUT);
+	attachInterrupt(RESET_CV, resetcvVoice1, RISING);
 }
 
 void loop() {
+	handleButton();
+	updateControls();
+	updateTriggers();
+	updateLEDs();
 
-	#ifdef CHECK_CPU
-	checkCPU();
-//	audioEngine.measure();
-	#endif
-
-	if(NO_FILES) {
-		// TODO : Flash the lights to show there are no files
-		if(ledFlashTimer > 100) {
-			ledControl.single(noFilesLedIndex);
-			noFilesLedIndex++;
-			noFilesLedIndex %= 4;
-			ledFlashTimer = 0;
-			rebootCounter ++;
-			// Wait 3 seconds and reboot
-			if(rebootCounter == 30) {
-				reBoot(0);
-			}
-		}
-		return;
-	}
-
-	updateInterfaceAndDisplay();
-
-	audioEngine.update();
-
-	if(audioEngine.error) {
-		// Too many read errors, reboot
-		Serial.println("Audio Engine errors. Reboot");
+	if (audioEngine.update() || audioEngine.error) {
 		reBoot(0);
 	}
-
-	if (playState.channelChanged) {
-		D(
-		Serial.print("RM: Going to next channel : ");
-		if(playState.channelChanged) Serial.print("RM: Channel Changed. ");
-		Serial.println("");
-		);
-
-		playState.currentChannel = playState.nextChannel;
-
-		AudioFileInfo* currentFileInfo = &fileScanner.fileInfos[playState.bank][playState.nextChannel];
-
-		audioEngine.changeTo(currentFileInfo, interface.start);
-		playState.channelChanged = false;
-
-		resetLedTimer = 0;
-
-	}
-
 }
-
-void updateInterfaceAndDisplay() {
-
-	uint16_t changes = checkInterface();
-	updateDisplay(changes);
-}
-
-void updateDisplay(uint16_t changes) {
-	if (showDisplay > SHOWFREQ) {
-		showDisplay = 0;
-	}
-	if (bankChangeMode) {
-		ledControl.showReset(1);// Reset led is on continuously when in bank change mode..
-		if(!flashLeds) {
-			ledControl.multi(playState.bank);
-		}
-
-	} else {
-		ledControl.showReset(resetLedTimer < FLASHTIME); // flash reset LED
-	}
-
-	if (flashLeds) {
-		if (ledFlashTimer < FLASHTIME * 4) {
-			ledControl.multi(0x0F);
-		} else if(ledFlashTimer < FLASHTIME * 8) {
-			ledControl.multi(0);
-		} else {
-			ledFlashTimer = 0;
-		}
-	} else if (settings.showMeter && !bankChangeMode) {
-		peakMeter();
-	}
-}
-
-// INTERFACE //
-
-uint16_t checkInterface() {
-
-	uint16_t changes = interface.update();
-
-	#ifdef RESET_TO_REBOOT
-	if (changes & BUTTON_SHORT_PRESS) {
-		reBoot(0);
-	}
-	#endif
-
-	// BANK MODE HANDLING
-	if((changes & BUTTON_LONG_PRESS) && !bankChangeMode) {
-		D(Serial.println("Enter bank change mode"););
-		bankChangeMode = true;
-		nextBank();
-//		ledFlashTimer = 0;
-	} else if((changes & BUTTON_LONG_RELEASE) && bankChangeMode) {
-		D(Serial.println("Exit bank change mode"););
-		flashLeds = false;
-		bankChangeMode = false;
-	}
-
-	if(changes & BUTTON_PULSE) {
-//		flashLeds = false;
-		if(bankChangeMode) {
-			D(Serial.println("BUTTON PULSE"););
-			nextBank();
-		} else {
-			D(Serial.println("Button Pulse but not in bank mode"););
-		}
-
-	}
-
-	boolean resetTriggered = changes & RESET_TRIGGERED;
-
-	bool skipToStartPoint = false;
-	bool speedChange = false;
-
-	if(settings.pitchMode) {
-
-		if(resetTriggered) {
-			skipToStartPoint = true;
-		}
-
-		if((changes & (ROOT_NOTE_CHANGED | ROOT_POT_CHANGED | ROOT_CV_CHANGED) ) || resetTriggered) {
-			speedChange = true;
-		}
-
-	} else {
-
-		if((changes & CHANGE_START_NOW) || resetTriggered) {
-			skipToStartPoint = true;
-		}
-	}
-
-	if(resetTriggered) {
-		if((changes & CHANNEL_CHANGED) || playState.nextChannel != playState.currentChannel) {
-			playState.channelChanged = true;
-		} else {
-			resetLedTimer = 0;
-		}
-	}
-
-	if(speedChange) doSpeedChange();
-	if(skipToStartPoint && !playState.channelChanged) {
-		if(settings.pitchMode) {
-			audioEngine.skipTo(0);
-		} else {
-			D(Serial.print("Skip to ");Serial.println(interface.start););
-			audioEngine.skipTo(interface.start);
-		}
-
-	}
-
-	return changes;
-}
-
-void doSpeedChange() {
-	float speed = 1.0;
-	speed = interface.rootNote - settings.rootNote;
-	D(Serial.print("Root ");Serial.println(interface.rootNote););
-	speed = pow(2,speed / 12);
-
-	audioEngine.setPlaybackSpeed(speed);
-}
-
-void nextBank() {
-
-	if(fileScanner.lastBankIndex == 0) {
-		D(Serial.println("Only 1 bank."););
-		return;
-	}
-	playState.bank++;
-	if (playState.bank > fileScanner.lastBankIndex) {
-		playState.bank = 0;
-	}
-	if(fileScanner.numFilesInBank[playState.bank] == 0) {
-		D(Serial.print("No file in bank ");Serial.println(playState.bank););
-		nextBank();
-	}
-
-	if (playState.nextChannel >= fileScanner.numFilesInBank[playState.bank])
-		playState.nextChannel = fileScanner.numFilesInBank[playState.bank] - 1;
-	interface.setChannelCount(fileScanner.numFilesInBank[playState.bank]);
-	playState.channelChanged = true;
-
-	D(
-		Serial.print("RM: Next Bank ");
-		Serial.println(playState.bank);
-	);
-
-	meterDisplayDelayTimer = 0;
-	EEPROM.write(EEPROM_BANK_SAVE_ADDRESS, playState.bank);
-}
-
-#ifdef ENGINE_TEST
-boolean tested = false;
-int testIndex = 0;
-
-void engineTest() {
-
-	if(!tested) {
-		audioEngine.test(fileScanner.fileInfos[playState.bank][0],fileScanner.fileInfos[playState.bank][1]);
-		tested = true;
-	}
-
-	uint8_t changes = interface.update();
-
-	if(changes & BUTTON_SHORT_PRESS) {
-		testIndex += 2;
-		if(testIndex >= fileScanner.numFilesInBank[playState.bank]) {
-			Serial.println("Back to start");
-			testIndex = 0;
-		}
-		audioEngine.test(fileScanner.fileInfos[playState.bank][testIndex],fileScanner.fileInfos[playState.bank][testIndex+1]);
-	}
-
-	return;
-}
-#endif
-
-void peakMeter() {
-	if( (peakDisplayTimer < 50) || (meterDisplayDelayTimer < settings.meterHide) ) return;
-
-	float peakReading = audioEngine.getPeak();
-	int monoPeak = round(peakReading * 4);
-	monoPeak = round(pow(2, monoPeak));
-//	D(Serial.print("Peak ");Serial.print(peakReading,4);Serial.print(" ");Serial.println(monoPeak););
-	ledControl.multi(monoPeak - 1);
-	peakDisplayTimer = 0;
-}
-

@@ -61,6 +61,15 @@ public:
 	// Only overrides if true. Force no crossfades.
 	boolean hardSwap = false;
 
+	// Enable S950-inspired lo-fi output processing
+	boolean lofi12bit = true;
+	// Target sample rate for decimation stage. Used only when lofi12bit is true.
+	uint16_t lofiSampleRate = 22050;
+	// Master low-pass frequency after bit reduction / decimation.
+	float lofiLowPassCutoff = 7000.0;
+	// State variable filter resonance. 0.7 is broad, higher values are narrower.
+	float lofiLowPassResonance = 1.2;
+
 	uint8_t loopMode = 0;
 
 private:
