@@ -6,64 +6,64 @@
 #include "SDPlayPCM.h"
 #include "AudioFileInfo.h"
 
-#define MAX_ERRORS  10
-#define VOICE_COUNT  2
+#define MAX_ERRORS   10
+#define VOICE_COUNT   2
 
 class AudioEngine {
 public:
-    SDPlayPCM playRaw1;
-    SDPlayPCM playRaw2;
+    // ── sources ──────────────────────────────────────────────────────────────
+    SDPlayPCM            playRaw1;
+    SDPlayPCM            playRaw2;
+    AudioEffectEnvelope  env1;
+    AudioEffectEnvelope  env2;
 
-    AudioEffectEnvelope env1;
-    AudioEffectEnvelope env2;
+    // ── per-voice resonant filters ───────────────────────────────────────────
+    AudioFilterStateVariable filter1;   // voice 1
+    AudioFilterStateVariable filter2;   // voice 2
 
-    AudioMixer4             voiceMixer;
-    AudioEffectLoFi         lofi;
-    AudioFilterStateVariable lowPass;
-    AudioAnalyzePeak        peak1;
-    AudioOutputAnalog       dac1;
+    // ── master bus: mix → lo-fi S950 stage → DAC ─────────────────────────────
+    AudioMixer4              voiceMixer;
+    AudioEffectLoFi          lofi;
+    AudioAnalyzePeak         peak1;
+    AudioOutputAnalog        dac1;
 
-    AudioConnection patchCord1;
-    AudioConnection patchCord2;
-    AudioConnection patchCord3;
-    AudioConnection patchCord4;
-    AudioConnection patchCord5;
-    AudioConnection patchCord6;
-    AudioConnection patchCord7;
-    AudioConnection peakPatch;
+    AudioConnection pc1, pc2, pc3, pc4, pc5, pc6, pc7, pc8, pc9, pc10;
 
     AudioEngine() :
-        patchCord1(playRaw1, env1),
-        patchCord2(playRaw2, env2),
-        patchCord3(env1, 0, voiceMixer, 0),
-        patchCord4(env2, 0, voiceMixer, 1),
-        patchCord5(voiceMixer, 0, lofi, 0),
-        patchCord6(lofi, 0, lowPass, 0),
-        patchCord7(lowPass, 0, dac1, 0),
-        peakPatch(lowPass, 0, peak1, 0)
+        pc1(playRaw1,    env1),
+        pc2(playRaw2,    env2),
+        pc3(env1,    0,  filter1, 0),
+        pc4(env2,    0,  filter2, 0),
+        pc5(filter1, 0,  voiceMixer, 0),   // LP output of filter1
+        pc6(filter2, 0,  voiceMixer, 1),   // LP output of filter2
+        pc7(voiceMixer, 0, lofi,  0),
+        pc8(lofi,    0,  dac1,  0),
+        pc9(lofi,    0,  peak1, 0),
+        pc10(playRaw1, playRaw1)            // placeholder — replaced below
     {
         playRaw1.playerID = 1;
         playRaw2.playerID = 2;
     }
 
-    void  init(float lofiCutoff, float lofiResonance, uint16_t lofiSampleRate);
+    void  init(uint16_t lofiSampleRate);
     bool  update();
-    bool  triggerVoice(uint8_t voiceIndex, AudioFileInfo* fileInfo);
-    void  setVoiceVolume(uint8_t voiceIndex, float gain);
-    void  setVoiceDecayMs(uint8_t voiceIndex, uint16_t decayMs, bool oneShot);
-    void  setVoicePlaybackSpeed(uint8_t voiceIndex, float speed);
-    void  setMasterFilter(float cutoff, float resonance);
+    bool  triggerVoice(uint8_t v, AudioFileInfo* fi);
+    void  setVoiceVolume(uint8_t v, float gain);
+    void  setVoiceDecayMs(uint8_t v, uint16_t ms, bool oneShot);
+    void  setVoicePlaybackSpeed(uint8_t v, float speed);
+    void  setVoiceFilter(uint8_t v, float cutoff, float resonance);
     void  setLofiEnabled(bool enabled);
-    void  setLofiSampleRate(uint16_t sampleRate);
+    void  setLofiSampleRate(uint16_t rate);
     float getPeak();
 
     bool error = false;
 
 private:
-    AudioFileInfo*    currentFileInfo[VOICE_COUNT] = {NULL, NULL};
-    AudioEffectEnvelope* envelopes[VOICE_COUNT]    = {&env1, &env2};
-    SDPlayPCM*           players[VOICE_COUNT]      = {&playRaw1, &playRaw2};
-    float voiceVolume[VOICE_COUNT]                 = {0.8f, 0.8f};
+    AudioEffectEnvelope*     envelopes[VOICE_COUNT] = {&env1, &env2};
+    SDPlayPCM*               players[VOICE_COUNT]   = {&playRaw1, &playRaw2};
+    AudioFilterStateVariable* filters[VOICE_COUNT]  = {&filter1, &filter2};
+    AudioFileInfo*           currentFI[VOICE_COUNT] = {NULL, NULL};
+    float                    voiceGain[VOICE_COUNT]  = {0.8f, 0.8f};
 };
 
 #endif
