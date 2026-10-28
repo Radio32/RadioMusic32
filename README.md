@@ -2,7 +2,7 @@
 
 Custom Eurorack firmware for the [Music Thing Modular Radio Music](https://github.com/TomWhitwell/RadioMusic) hardware, based on a Teensy 3.2.
 
-2-voice sample player with S950-style lo-fi character, per-voice resonant filter, and chromatic V/oct playback on voice 2.
+2-voice sample player with S950-style switched-cap filter emulation, per-voice resonant filter, and chromatic V/oct playback on voice 2.
 
 ---
 
@@ -58,13 +58,15 @@ Auto-audition fires on pages 0 and 1 when a pot moves.
 ## Signal chain
 
 ```
-Voice 1: SD → envelope → filter (pot 2, fixed 1.15 resonance) ─┐
-Voice 2: SD → envelope → filter (pot 2, fixed 1.15 resonance) ─┴→ mix → lo-fi → DAC
+Voice 1: SD → envelope → SCF emulation → filter (pot 2, fixed 1.15 resonance) ─┐
+Voice 2: SD → envelope → SCF emulation → filter (pot 2, fixed 1.15 resonance) ─┴→ mix → lo-fi → DAC
 ```
 
-The lo-fi stage reduces bit depth to 12 bits and decimates the sample rate,
-recreating the gritty character of the Akai S950. At 32k it is clean; lower
-values add texture and aliasing.
+The SCF emulation stage models a vintage sampler anti-alias/reconstruction path:
+a dynamic 6-pole low-pass (tracking playback Nyquist) plus a fixed smoothing stage.
+
+The lo-fi stage then reduces bit depth to 12 bits and decimates playback rate.
+At 32k it is near-clean; lower values add grit, image tones, and alias texture.
 
 ---
 

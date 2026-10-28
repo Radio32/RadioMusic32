@@ -3,6 +3,7 @@
 
 #include <Audio.h>
 #include "AudioEffectLoFi.h"
+#include "AudioEffectSCF.h"
 #include "SDPlayPCM.h"
 #include "AudioFileInfo.h"
 
@@ -16,6 +17,8 @@ public:
     SDPlayPCM            playRaw2;
     AudioEffectEnvelope  env1;
     AudioEffectEnvelope  env2;
+    AudioEffectSCF       scf1;
+    AudioEffectSCF       scf2;
 
     // ── per-voice resonant filters ───────────────────────────────────────────
     AudioFilterStateVariable filter1;   // voice 1
@@ -27,19 +30,20 @@ public:
     AudioAnalyzePeak         peak1;
     AudioOutputAnalog        dac1;
 
-    AudioConnection pc1, pc2, pc3, pc4, pc5, pc6, pc7, pc8, pc9, pc10;
+    AudioConnection pc1, pc2, pc3, pc4, pc5, pc6, pc7, pc8, pc9, pc10, pc11;
 
     AudioEngine() :
         pc1(playRaw1,    env1),
         pc2(playRaw2,    env2),
-        pc3(env1,    0,  filter1, 0),
-        pc4(env2,    0,  filter2, 0),
-        pc5(filter1, 0,  voiceMixer, 0),   // LP output of filter1
-        pc6(filter2, 0,  voiceMixer, 1),   // LP output of filter2
-        pc7(voiceMixer, 0, lofi,  0),
-        pc8(lofi,    0,  dac1,  0),
-        pc9(lofi,    0,  peak1, 0),
-        pc10(playRaw1, playRaw1)            // placeholder — replaced below
+        pc3(env1,    0,  scf1, 0),
+        pc4(env2,    0,  scf2, 0),
+        pc5(scf1,    0,  filter1, 0),
+        pc6(scf2,    0,  filter2, 0),
+        pc7(filter1, 0,  voiceMixer, 0),
+        pc8(filter2, 0,  voiceMixer, 1),
+        pc9(voiceMixer, 0, lofi,  0),
+        pc10(lofi,    0,  dac1,  0),
+        pc11(lofi,    0,  peak1, 0)
     {
         playRaw1.playerID = 1;
         playRaw2.playerID = 2;
@@ -61,6 +65,7 @@ public:
 private:
     AudioEffectEnvelope*     envelopes[VOICE_COUNT] = {&env1, &env2};
     SDPlayPCM*               players[VOICE_COUNT]   = {&playRaw1, &playRaw2};
+    AudioEffectSCF*          scf[VOICE_COUNT]       = {&scf1, &scf2};
     AudioFilterStateVariable* filters[VOICE_COUNT]  = {&filter1, &filter2};
     AudioFileInfo*           currentFI[VOICE_COUNT] = {NULL, NULL};
     float                    voiceGain[VOICE_COUNT]  = {0.8f, 0.8f};

@@ -2,7 +2,7 @@
 #include "Arduino.h"
 
 void AudioEngine::init(uint16_t lofiSampleRate) {
-    AudioMemory(48);
+    AudioMemory(56);
 
     for (uint8_t i = 0; i < VOICE_COUNT; i++) {
         players[i]->loopPlayback(false);
@@ -12,6 +12,9 @@ void AudioEngine::init(uint16_t lofiSampleRate) {
         envelopes[i]->sustain(0.0f);
         envelopes[i]->release(0.0f);
         voiceMixer.gain(i, voiceGain[i]);
+        scf[i]->setEnabled(true);
+        scf[i]->setControlStride(16);
+        scf[i]->setClockRateHz(44100.0f);
         // Default filter: open, low resonance
         filters[i]->frequency(8000.0f);
         filters[i]->resonance(0.9f);
@@ -33,6 +36,7 @@ bool AudioEngine::triggerVoice(uint8_t v, AudioFileInfo* fi) {
     if (v >= VOICE_COUNT || !fi) return false;
     fi->startPlayFrom = 0;
     currentFI[v] = fi;
+    scf[v]->setClockRateHz((float)fi->getSampleRate() * players[v]->playbackSpeed);
     envelopes[v]->noteOff();
     bool ok = players[v]->playFrom(fi);
     envelopes[v]->noteOn();
@@ -57,6 +61,11 @@ void AudioEngine::setVoicePlaybackSpeed(uint8_t v, float speed) {
     if (v >= VOICE_COUNT) return;
     speed = constrain(speed, 0.03f, 8.0f);
     players[v]->playbackSpeed = speed;
+    if (currentFI[v] != NULL) {
+        scf[v]->setClockRateHz((float)currentFI[v]->getSampleRate() * speed);
+    } else {
+        scf[v]->setClockRateHz(44100.0f * speed);
+    }
 }
 
 void AudioEngine::setVoiceFilter(uint8_t v, float cutoff, float resonance) {
