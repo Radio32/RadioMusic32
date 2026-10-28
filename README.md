@@ -1,118 +1,126 @@
-# RadioMusic32 (Custom 3-Voice Firmware Build)
+# RadioMusic32
 
-This repository is based on the original [Tom Whitwell Radio Music project](https://github.com/TomWhitwell/RadioMusic), with the **RadioMusic32** custom firmware profile focused on:
+Custom Eurorack firmware for the [Music Thing Modular Radio Music](https://github.com/TomWhitwell/RadioMusic) hardware, based on a Teensy 3.2.
 
-- 3 trigger inputs -> 3 sample voices
-- 12-bit lo-fi character
-- resonant low-pass filtering
-- simplified SD file handling (`1/`, `2/`, `3/`)
-- web-based SD library conversion workflow
+2-voice sample player with S950-style lo-fi character, per-voice resonant filter, and chromatic V/oct playback on voice 2.
 
 ---
 
-## Original project resources
+## Hardware
 
-- Full wiki: <https://github.com/TomWhitwell/RadioMusic/wiki>
-- Hardware files: [RadioMusicHardware/](./RadioMusicHardware)
-- Original firmware source (now customized): [RadioMusic32/](./RadioMusic32)
+Original Radio Music PCB — no hardware modifications required.
 
-Original Radio Music is open hardware and CC-BY-SA licensed. See [License](#license).
-
----
-
-## Current custom firmware behavior
-
-Implemented in [RadioMusic32/](./RadioMusic32):
-
-- Trigger mapping:
-  - Voice 1: Reset CV input
-  - Voice 2: Channel CV input
-  - Voice 3: Time CV input
-- Playback:
-  - 3 independent sample voices mixed to mono output
-  - per-voice volume + decay
-  - one-shot style long decay behavior
-- Tone:
-  - custom lo-fi stage (12-bit quantization + sample-rate style decimation)
-  - resonant low-pass filter on master bus
-- Control UI:
-  - short press / long press mode system
-  - 4 setup pages (LED-indicated)
-  - auto-audition while editing parameters (rate-limited)
+| Pin | Signal |
+|-----|--------|
+| A9 | Pot 1 — sample index |
+| A7 | Pot 2 — filter cutoff (selected voice) |
+| 9 | CV 1 — trigger voice 1 (interrupt) |
+| A6 | CV 2 — trigger voice 2 |
+| A8 | CV 3 — V/oct pitch voice 2 |
+| 8 | Button |
+| 3–6 | LEDs |
+| 11 | Reset LED |
+| A14 | DAC out |
 
 ---
 
-## SD card file handling (custom profile)
+## Controls
 
-Use exactly three root folders:
+### Normal mode
+| Control | Function |
+|---------|----------|
+| Pot 1 | Sample index 0–15 (both voices) |
+| Pot 2 | Filter cutoff for selected voice |
+| CV 1 | Trigger voice 1 |
+| CV 2 | Trigger voice 2 |
+| CV 3 | V/oct pitch for voice 2 |
+| Short press | Toggle selected voice (LED 1 or 2 lit) |
+| Hold + Pot 1 | Bank select A–P (LED binary) |
+| Release < 1.5s | Confirm bank, back to normal |
+| Hold ≥ 1.5s | Confirm bank + enter setup |
 
-- `1` (voice 1 sample set)
-- `2` (voice 2 sample set)
-- `3` (voice 3 sample set)
+### Setup mode
+| Short press | Next page |
+|---|---|
+| Hold ≥ 1.5s | Exit to normal |
 
-Constraints:
+| Page | LED | Pot 1 | Pot 2 |
+|------|-----|-------|-------|
+| 0 | 1 | Voice 1 volume | Voice 1 decay |
+| 1 | 2 | Voice 2 volume | Voice 2 decay |
+| 2 | 3 | V/oct semitones (−24…+24) | Fine tune (−50…+50 cents) |
+| 3 | 4 | Lo-fi rate (8k–32k Hz) | Lo-fi on/off |
 
-- max 16 files per folder
-- recommended format: mono 16-bit 32k WAV
-- normal mode sample index is selected by pot and applied globally (slot 0..15)
-
-If a folder has fewer than 16 files, out-of-range slots clamp to the last available file in that folder.
+Auto-audition fires on pages 0 and 1 when a pot moves.
 
 ---
 
-## Build firmware
+## Signal chain
 
-### Toolchain
-
-- Arduino CLI (or Arduino IDE with Teensy support)
-- Teensy core/package installed
-- target board: Teensy 3.1 / 3.2
-
-### CLI build command
-
-From repository root:
-
-```bash
-arduino-cli compile --fqbn teensy:avr:teensy31 ./RadioMusic32
+```
+Voice 1: SD → envelope → filter (pot 2, fixed 1.15 resonance) ─┐
+Voice 2: SD → envelope → filter (pot 2, fixed 1.15 resonance) ─┴→ mix → lo-fi → DAC
 ```
 
-Flash using your preferred Teensy workflow (Arduino IDE or Teensy loader).
+The lo-fi stage reduces bit depth to 12 bits and decimates the sample rate,
+recreating the gritty character of the Akai S950. At 32k it is clean; lower
+values add texture and aliasing.
 
 ---
 
-## Web Library Manager (GitHub Pages app)
+## SD card layout
 
-Path: [docs/library-manager/index.html](./docs/library-manager/index.html)
+```
+A/
+  1/  01.wav … 16.wav   ← voice 1 samples for bank A
+  2/  01.wav … 16.wav   ← voice 2 samples for bank A
+B/
+  1/  …
+  2/  …
+…
+P/
+  1/  …
+  2/  …
+```
 
-Features:
+- 16 banks: **A–P**
+- 2 voices per bank: **1** (sampler) and **2** (chromatic)
+- Max 16 files per voice per bank
+- Format: **mono 16-bit 32k WAV** (recommended)
 
-- assign files to folders `1`, `2`, `3`
-- drag-and-drop files between folders
-- per-file browser preview
-- convert to mono 16-bit 32k WAV in-browser
-- optional silence trimming and normalization
-- auto-name output files `01.wav` .. `16.wav`
-- export SD-ready ZIP with folder layout
-- export report with duration + peak/warning metrics
-
-To publish on GitHub Pages, serve the `docs/` directory as Pages source.
+Use the [web library manager](https://radio32.github.io/RadioMusic32/) to convert and package files.
 
 ---
 
-## Repository layout (important paths)
+## Build & flash
 
-- firmware sketch: [RadioMusic32/RadioMusic32.ino](./RadioMusic32/RadioMusic32.ino)
-- audio engine: [RadioMusic32/AudioEngine.h](./RadioMusic32/AudioEngine.h), [RadioMusic32/AudioEngine.cpp](./RadioMusic32/AudioEngine.cpp)
-- lo-fi effect: [RadioMusic32/AudioEffectLoFi.h](./RadioMusic32/AudioEffectLoFi.h), [RadioMusic32/AudioEffectLoFi.cpp](./RadioMusic32/AudioEffectLoFi.cpp)
-- settings parser: [RadioMusic32/Settings.h](./RadioMusic32/Settings.h), [RadioMusic32/Settings.cpp](./RadioMusic32/Settings.cpp)
-- custom notes: [RadioMusic32/RadioMusic32_Notes.txt](./RadioMusic32/RadioMusic32_Notes.txt)
+```bash
+# Compile
+arduino-cli compile --fqbn teensy:avr:teensy31 ./RadioMusic32
+
+# Flash (Teensy connected)
+arduino-cli upload --fqbn teensy:avr:teensy31 --port usb:124000 ./RadioMusic32
+```
+
+---
+
+## Web Library Manager
+
+**https://radio32.github.io/RadioMusic32/**
+
+- 16 bank tabs (A–P), 2 voice columns each
+- Drag-and-drop files between banks/voices
+- Per-file preview
+- Convert to mono 16-bit 32k WAV in-browser
+- Trim silence + normalize options
+- SD-ready ZIP download
+- Export report with duration, peak, and warnings
 
 ---
 
 ## License
 
-Radio Music is open hardware/software by Tom Whitwell under CC-BY-SA:
+Based on [Radio Music](https://github.com/TomWhitwell/RadioMusic) by Tom Whitwell,
+licensed CC-BY-SA 3.0. This derivative work preserves attribution and share-alike terms.
 
-- <https://creativecommons.org/licenses/by-sa/3.0/>
-
-This repository includes work derived from the original project and must preserve attribution/share-alike terms.
+https://creativecommons.org/licenses/by-sa/3.0/
