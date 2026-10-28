@@ -10,10 +10,13 @@
   <main class="container">
     <header>
       <h1>RadioMusic32 Library Manager</h1>
-      <p>Build an SD-ready ZIP with folders <code>1/</code>, <code>2/</code>, <code>3/</code>. Files are converted to mono 16-bit 32k WAV and auto-named <code>01.wav</code> to <code>16.wav</code>.</p>
+      <p>16 banks (A–P) × 2 voices. Voice 1 = sampler, Voice 2 = chromatic V/oct. Files convert to mono 16-bit 32k WAV.</p>
     </header>
 
-    <section class="folders" id="folders"></section>
+    <section class="bank-section">
+      <nav class="bank-tabs" id="bankTabs"></nav>
+      <div class="bank-voices" id="bankVoices"></div>
+    </section>
 
     <section class="processing">
       <h2>Conversion options</h2>
@@ -22,7 +25,7 @@
     </section>
 
     <section class="actions">
-      <button id="downloadZip">Convert & Download ZIP</button>
+      <button id="downloadZip">Convert &amp; Download ZIP</button>
       <button id="clearAll" class="secondary">Clear All</button>
     </section>
 
@@ -38,8 +41,7 @@
         <table class="report-table">
           <thead>
             <tr>
-              <th>Folder</th>
-              <th>Slot</th>
+              <th>Path</th>
               <th>Source file</th>
               <th>Duration (s)</th>
               <th>Peak before</th>

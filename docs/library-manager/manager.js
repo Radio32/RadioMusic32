@@ -1,455 +1,397 @@
-const FOLDERS = [1, 2, 3];
-const MAX_FILES = 16;
-const TARGET_RATE = 32000;
-const SILENCE_THRESHOLD = 0.003;
+const BANK_LETTERS  = Array.from('ABCDEFGHIJKLMNOP');
+const VOICE_LABELS  = ['Voice 1 — Sampler', 'Voice 2 — Chromatic (V/oct)'];
+const MAX_FILES     = 16;
+const TARGET_RATE   = 32000;
+const SIL_THRESHOLD = 0.003;
 
-const folderState = {
-  1: [],
-  2: [],
-  3: []
+// state.banks[bankIndex][voiceIndex] = [{id, file}, ...]
+const state = {
+  currentBank: 0,
+  banks: BANK_LETTERS.map(() => VOICE_LABELS.map(() => []))
 };
 
 let audioContext = null;
 let previewAudio = null;
 let previewItemId = null;
-let previewUrl = null;
+let previewUrl    = null;
 
-function newItemId() {
-  if (window.crypto && window.crypto.randomUUID) {
-    return window.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function newId() {
+  return window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
 
-function ensureAudioContext() {
+function ensureCtx() {
   if (!audioContext) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) {
-      throw new Error("AudioContext is not supported in this browser.");
-    }
+    if (!Ctx) throw new Error('AudioContext not supported.');
     audioContext = new Ctx();
   }
   return audioContext;
 }
 
 function setStatus(text, progress = null) {
-  document.getElementById("statusText").textContent = text;
-  if (progress !== null) {
-    document.getElementById("progress").value = progress;
-  }
+  document.getElementById('statusText').textContent = text;
+  if (progress !== null) document.getElementById('progress').value = progress;
 }
 
-function maxPeak(samples) {
-  let peak = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const v = Math.abs(samples[i]);
-    if (v > peak) peak = v;
-  }
-  return peak;
+function bankHasFiles(b) {
+  return state.banks[b].some(v => v.length > 0);
 }
 
-function renderReport(rows) {
-  const body = document.getElementById("reportBody");
-  const summary = document.getElementById("reportSummary");
-  body.innerHTML = "";
+// ── bank tabs ─────────────────────────────────────────────────────────────────
 
-  if (!rows.length) {
-    summary.textContent = "No export report yet.";
-    return;
-  }
-
-  let clippedCount = 0;
-  let shortCount = 0;
-
-  rows.forEach((row) => {
-    if (row.warnings.includes("clip-risk")) clippedCount++;
-    if (row.warnings.includes("very-short")) shortCount++;
-
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${row.folder}</td>
-      <td>${row.slot}</td>
-      <td title="${row.sourceName}">${row.sourceName}</td>
-      <td>${row.duration.toFixed(3)}</td>
-      <td>${row.peakBefore.toFixed(3)}</td>
-      <td>${row.peakAfter.toFixed(3)}</td>
-      <td>${row.warnings.length ? row.warnings.join(", ") : "-"}</td>
-    `;
-    body.appendChild(tr);
+function renderBankTabs() {
+  const nav = document.getElementById('bankTabs');
+  nav.innerHTML = '';
+  BANK_LETTERS.forEach((letter, idx) => {
+    const btn = document.createElement('button');
+    btn.className = 'bank-tab' +
+                    (idx === state.currentBank ? ' active' : '') +
+                    (bankHasFiles(idx) ? ' has-files' : '');
+    btn.textContent = letter;
+    btn.title = `Bank ${letter}`;
+    btn.addEventListener('click', () => {
+      state.currentBank = idx;
+      renderBankTabs();
+      renderCurrentBank();
+    });
+    nav.appendChild(btn);
   });
-
-  summary.textContent = `Exported ${rows.length} file(s). Warnings: ${clippedCount} clip-risk, ${shortCount} very-short.`;
 }
 
-function createFolderCard(folderId) {
-  const card = document.createElement("article");
-  card.className = "folder";
-  card.innerHTML = `
-    <h2>Folder ${folderId}</h2>
-    <div class="folder-controls">
-      <input type="file" id="input-${folderId}" multiple accept="audio/*">
-    </div>
-    <p class="hint">Max ${MAX_FILES} files. Drag files between folders. Exported as ${folderId}/01.wav ... ${folderId}/16.wav</p>
-    <ol class="file-list" id="list-${folderId}" data-folder="${folderId}"></ol>
-  `;
+// ── voice columns ─────────────────────────────────────────────────────────────
 
-  const input = card.querySelector(`#input-${folderId}`);
-  input.addEventListener("change", (event) => {
-    addFiles(folderId, Array.from(event.target.files || []));
-    input.value = "";
-  });
+function renderCurrentBank() {
+  const container = document.getElementById('bankVoices');
+  container.innerHTML = '';
+  const b      = state.currentBank;
+  const letter = BANK_LETTERS[b];
 
-  const list = card.querySelector(`#list-${folderId}`);
-  list.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    list.classList.add("drag-over");
+  VOICE_LABELS.forEach((label, v) => {
+    const col = document.createElement('div');
+    col.className = 'voice-column';
+
+    const inputId = `input-${b}-${v}`;
+    const listId  = `list-${b}-${v}`;
+
+    col.innerHTML = `
+      <h2>${label}</h2>
+      <div class="voice-controls">
+        <input type="file" id="${inputId}" multiple accept="audio/*">
+      </div>
+      <p class="hint">Exported as ${letter}/${v + 1}/01.wav … ${letter}/${v + 1}/16.wav</p>
+      <ol class="file-list" id="${listId}"></ol>`;
+
+    // file input
+    const input = col.querySelector(`#${inputId}`);
+    input.addEventListener('change', e => {
+      addFiles(b, v, Array.from(e.target.files || []));
+      input.value = '';
+    });
+
+    // drop zone on list
+    const list = col.querySelector(`#${listId}`);
+    list.addEventListener('dragover', e => { e.preventDefault(); list.classList.add('drag-over'); });
+    list.addEventListener('dragleave', () => list.classList.remove('drag-over'));
+    list.addEventListener('drop', e => {
+      e.preventDefault();
+      list.classList.remove('drag-over');
+      const payload = e.dataTransfer.getData('application/json');
+      if (!payload) return;
+      const d = JSON.parse(payload);
+      moveItem(d.fromBank, d.fromVoice, b, v, d.id);
+    });
+
+    container.appendChild(col);
+    renderVoiceList(b, v);
   });
-  list.addEventListener("dragleave", () => {
-    list.classList.remove("drag-over");
-  });
-  list.addEventListener("drop", (event) => {
-    event.preventDefault();
-    list.classList.remove("drag-over");
-    const payload = event.dataTransfer.getData("application/json");
-    if (!payload) return;
-    const data = JSON.parse(payload);
-    moveItem(data.fromFolder, folderId, data.id);
-  });
-  return card;
 }
 
-function renderFolders() {
-  const root = document.getElementById("folders");
-  root.innerHTML = "";
-  FOLDERS.forEach((folderId) => root.appendChild(createFolderCard(folderId)));
-  renderAllLists();
+function renderVoiceList(b, v) {
+  const list = document.getElementById(`list-${b}-${v}`);
+  if (!list) return;
+  list.innerHTML = '';
+
+  state.banks[b][v].forEach((item, idx) => {
+    const li = document.createElement('li');
+    li.className = 'file-row';
+    li.draggable = true;
+    li.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('application/json', JSON.stringify({ id: item.id, fromBank: b, fromVoice: v }));
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    const label = document.createElement('span');
+    label.className = 'file-row-label';
+    label.textContent = `${String(idx + 1).padStart(2, '0')}. ${item.file.name}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'file-actions';
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'secondary';
+    playBtn.textContent = '▶';
+    playBtn.title = 'Preview';
+    playBtn.addEventListener('click', () => togglePreview(item.id, item.file));
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'secondary';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', () => {
+      if (previewItemId === item.id) stopPreview();
+      state.banks[b][v].splice(idx, 1);
+      renderVoiceList(b, v);
+      renderBankTabs();
+    });
+
+    actions.appendChild(playBtn);
+    actions.appendChild(removeBtn);
+    li.appendChild(label);
+    li.appendChild(actions);
+    list.appendChild(li);
+  });
 }
+
+// ── file management ───────────────────────────────────────────────────────────
+
+function addFiles(b, v, files) {
+  if (!files.length) return;
+  const room = MAX_FILES - state.banks[b][v].length;
+  if (room <= 0) { setStatus(`Bank ${BANK_LETTERS[b]} Voice ${v + 1} is full.`); return; }
+  const accepted = files.slice(0, room).map(f => ({ id: newId(), file: f }));
+  state.banks[b][v].push(...accepted);
+  renderBankTabs();
+  renderVoiceList(b, v);
+  const skipped = files.length - accepted.length;
+  setStatus(skipped > 0
+    ? `Added ${accepted.length} file(s) to Bank ${BANK_LETTERS[b]} / Voice ${v + 1}. ${skipped} skipped (full).`
+    : `Added ${accepted.length} file(s) to Bank ${BANK_LETTERS[b]} / Voice ${v + 1}.`);
+}
+
+function moveItem(fromBank, fromVoice, toBank, toVoice, id) {
+  const src = state.banks[fromBank][fromVoice];
+  const dst = state.banks[toBank][toVoice];
+  const idx = src.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  if (dst.length >= MAX_FILES) { setStatus(`Bank ${BANK_LETTERS[toBank]} Voice ${toVoice + 1} is full.`); return; }
+  const [item] = src.splice(idx, 1);
+  dst.push(item);
+  renderBankTabs();
+  renderCurrentBank();
+  setStatus(`Moved "${item.file.name}" → Bank ${BANK_LETTERS[toBank]} / Voice ${toVoice + 1}.`);
+}
+
+// ── preview ───────────────────────────────────────────────────────────────────
 
 function stopPreview() {
-  if (previewAudio) {
-    previewAudio.pause();
-    previewAudio.currentTime = 0;
-  }
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-  }
-  previewAudio = null;
-  previewItemId = null;
-  previewUrl = null;
-}
-
-function renderAllLists() {
-  FOLDERS.forEach((folderId) => {
-    const list = document.getElementById(`list-${folderId}`);
-    list.innerHTML = "";
-
-    folderState[folderId].forEach((item, idx) => {
-      const li = document.createElement("li");
-      li.className = "file-row";
-      li.draggable = true;
-      li.addEventListener("dragstart", (event) => {
-        event.dataTransfer.setData("application/json", JSON.stringify({ id: item.id, fromFolder: folderId }));
-        event.dataTransfer.effectAllowed = "move";
-      });
-
-      const label = document.createElement("span");
-      label.className = "file-row-label";
-      label.textContent = `${String(idx + 1).padStart(2, "0")}. ${item.file.name}`;
-
-      const actions = document.createElement("div");
-      actions.className = "file-actions";
-
-      const playBtn = document.createElement("button");
-      playBtn.className = "secondary";
-      playBtn.textContent = "Play";
-      playBtn.addEventListener("click", () => togglePreview(item.id, item.file));
-
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "secondary";
-      removeBtn.textContent = "Remove";
-      removeBtn.addEventListener("click", () => {
-        if (previewItemId === item.id) stopPreview();
-        folderState[folderId].splice(idx, 1);
-        renderAllLists();
-      });
-
-      actions.appendChild(playBtn);
-      actions.appendChild(removeBtn);
-      li.appendChild(label);
-      li.appendChild(actions);
-      list.appendChild(li);
-    });
-  });
+  if (previewAudio) { previewAudio.pause(); previewAudio.currentTime = 0; }
+  if (previewUrl)   URL.revokeObjectURL(previewUrl);
+  previewAudio = previewItemId = previewUrl = null;
 }
 
 async function togglePreview(itemId, file) {
-  if (previewItemId === itemId && previewAudio) {
-    stopPreview();
-    setStatus("Preview stopped.");
-    return;
-  }
-
+  if (previewItemId === itemId) { stopPreview(); setStatus('Preview stopped.'); return; }
   stopPreview();
-  previewUrl = URL.createObjectURL(file);
+  previewUrl   = URL.createObjectURL(file);
   previewAudio = new Audio(previewUrl);
   previewItemId = itemId;
-
-  previewAudio.onended = () => {
-    stopPreview();
-  };
-
+  previewAudio.onended = stopPreview;
   try {
     await previewAudio.play();
     setStatus(`Preview: ${file.name}`);
-  } catch (error) {
+  } catch (err) {
     stopPreview();
-    setStatus(`Cannot preview file: ${error.message}`);
+    setStatus(`Preview failed: ${err.message}`);
   }
 }
 
-function addFiles(folderId, files) {
-  if (!files.length) return;
-  const room = MAX_FILES - folderState[folderId].length;
-  if (room <= 0) {
-    setStatus(`Folder ${folderId} is already full (${MAX_FILES} files).`);
-    return;
+// ── DSP helpers ───────────────────────────────────────────────────────────────
+
+function mixToMono(buf) {
+  const ch = buf.numberOfChannels, n = buf.length;
+  const out = new Float32Array(n);
+  if (ch === 1) { out.set(buf.getChannelData(0)); return out; }
+  for (let c = 0; c < ch; c++) {
+    const src = buf.getChannelData(c);
+    for (let i = 0; i < n; i++) out[i] += src[i];
   }
-
-  const accepted = files.slice(0, room).map((file) => ({ id: newItemId(), file }));
-  folderState[folderId].push(...accepted);
-  renderAllLists();
-
-  if (files.length > room) {
-    setStatus(`Added ${room} files to folder ${folderId}. Extra files were skipped.`);
-  } else {
-    setStatus(`Added ${accepted.length} file(s) to folder ${folderId}.`);
-  }
-}
-
-function moveItem(fromFolder, toFolder, itemId) {
-  if (fromFolder === toFolder) return;
-  const src = folderState[fromFolder];
-  const dst = folderState[toFolder];
-  const idx = src.findIndex((x) => x.id === itemId);
-  if (idx < 0) return;
-  if (dst.length >= MAX_FILES) {
-    setStatus(`Folder ${toFolder} is full (${MAX_FILES} files).`);
-    return;
-  }
-  const [item] = src.splice(idx, 1);
-  dst.push(item);
-  renderAllLists();
-  setStatus(`Moved "${item.file.name}" to folder ${toFolder}.`);
-}
-
-function mixToMono(audioBuffer) {
-  const channels = audioBuffer.numberOfChannels;
-  const length = audioBuffer.length;
-  const mono = new Float32Array(length);
-
-  if (channels === 1) {
-    mono.set(audioBuffer.getChannelData(0));
-    return mono;
-  }
-
-  for (let ch = 0; ch < channels; ch++) {
-    const src = audioBuffer.getChannelData(ch);
-    for (let i = 0; i < length; i++) {
-      mono[i] += src[i];
-    }
-  }
-
-  const scale = 1 / channels;
-  for (let i = 0; i < length; i++) mono[i] *= scale;
-  return mono;
-}
-
-function trimSilence(samples, threshold) {
-  let start = 0;
-  let end = samples.length - 1;
-  while (start < samples.length && Math.abs(samples[start]) < threshold) start++;
-  while (end > start && Math.abs(samples[end]) < threshold) end--;
-  if (start >= end) return samples;
-  const pad = 64;
-  const finalStart = Math.max(0, start - pad);
-  const finalEnd = Math.min(samples.length - 1, end + pad);
-  return samples.slice(finalStart, finalEnd + 1);
-}
-
-function normalize(samples, targetPeak = 0.95) {
-  let maxAbs = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const v = Math.abs(samples[i]);
-    if (v > maxAbs) maxAbs = v;
-  }
-  if (maxAbs <= 0.000001) return samples;
-  const gain = targetPeak / maxAbs;
-  const out = new Float32Array(samples.length);
-  for (let i = 0; i < samples.length; i++) out[i] = samples[i] * gain;
+  const inv = 1 / ch;
+  for (let i = 0; i < n; i++) out[i] *= inv;
   return out;
 }
 
-function resampleLinear(samples, sourceRate, targetRate) {
-  if (sourceRate === targetRate) return samples;
-  const outLength = Math.max(1, Math.round(samples.length * targetRate / sourceRate));
-  const out = new Float32Array(outLength);
-  const ratio = sourceRate / targetRate;
+function peakOf(s) {
+  let p = 0;
+  for (let i = 0; i < s.length; i++) { const v = Math.abs(s[i]); if (v > p) p = v; }
+  return p;
+}
 
-  for (let i = 0; i < outLength; i++) {
-    const pos = i * ratio;
-    const idx = Math.floor(pos);
-    const frac = pos - idx;
-    const a = samples[idx] || 0;
-    const b = samples[idx + 1] || a;
-    out[i] = a + ((b - a) * frac);
+function trimSilence(s) {
+  let lo = 0, hi = s.length - 1;
+  while (lo < s.length && Math.abs(s[lo]) < SIL_THRESHOLD) lo++;
+  while (hi > lo      && Math.abs(s[hi]) < SIL_THRESHOLD) hi--;
+  if (lo >= hi) return s;
+  return s.slice(Math.max(0, lo - 64), Math.min(s.length, hi + 65));
+}
+
+function normalize(s, target = 0.95) {
+  const pk = peakOf(s);
+  if (pk < 1e-6) return s;
+  const g = target / pk;
+  const out = new Float32Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s[i] * g;
+  return out;
+}
+
+function resample(s, srcRate, dstRate) {
+  if (srcRate === dstRate) return s;
+  const n = Math.max(1, Math.round(s.length * dstRate / srcRate));
+  const out = new Float32Array(n);
+  const r = srcRate / dstRate;
+  for (let i = 0; i < n; i++) {
+    const p = i * r, j = Math.floor(p), f = p - j;
+    out[i] = (s[j] || 0) + ((s[j + 1] || s[j] || 0) - (s[j] || 0)) * f;
   }
   return out;
 }
 
-function floatTo16BitPCM(value) {
-  if (value > 1) value = 1;
-  if (value < -1) value = -1;
-  return value < 0 ? Math.round(value * 32768) : Math.round(value * 32767);
+function encodeWav(s, rate) {
+  const bps = 2, data = s.length * bps;
+  const buf = new ArrayBuffer(44 + data);
+  const v   = new DataView(buf);
+  const w   = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + data, true);
+  w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * bps, true);
+  v.setUint16(32, bps, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, data, true);
+  let o = 44;
+  for (let i = 0; i < s.length; i++) {
+    const x = Math.max(-1, Math.min(1, s[i]));
+    v.setInt16(o, x < 0 ? Math.round(x * 32768) : Math.round(x * 32767), true);
+    o += 2;
+  }
+  return buf;
 }
 
-function encodeWav16Mono(samples, sampleRate) {
-  const bytesPerSample = 2;
-  const dataSize = samples.length * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  function writeString(offset, text) {
-    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
-  }
-
-  writeString(0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(8, "WAVE");
-  writeString(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * bytesPerSample, true);
-  view.setUint16(32, bytesPerSample, true);
-  view.setUint16(34, 16, true);
-  writeString(36, "data");
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    view.setInt16(offset, floatTo16BitPCM(samples[i]), true);
-    offset += 2;
-  }
-  return buffer;
-}
-
-async function convertAudioFile(file, options) {
-  const ctx = ensureAudioContext();
-  const arrayBuffer = await file.arrayBuffer();
-  const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
-  let mono = mixToMono(decoded);
-  const peakBefore = maxPeak(mono);
-
-  if (options.trimSilence) mono = trimSilence(mono, SILENCE_THRESHOLD);
-  if (options.normalize) mono = normalize(mono, 0.95);
-
-  const resampled = resampleLinear(mono, decoded.sampleRate, TARGET_RATE);
-  const peakAfter = maxPeak(resampled);
-  const duration = resampled.length / TARGET_RATE;
+async function convertFile(file, opts) {
+  const ctx  = ensureCtx();
+  const ab   = await file.arrayBuffer();
+  const dec  = await ctx.decodeAudioData(ab.slice(0));
+  let   mono = mixToMono(dec);
+  const pkBefore = peakOf(mono);
+  if (opts.trim)      mono = trimSilence(mono);
+  if (opts.normalize) mono = normalize(mono, 0.95);
+  const rs       = resample(mono, dec.sampleRate, TARGET_RATE);
+  const pkAfter  = peakOf(rs);
+  const duration = rs.length / TARGET_RATE;
   const warnings = [];
-  if (peakAfter >= 0.999) warnings.push("clip-risk");
-  if (duration < 0.03) warnings.push("very-short");
+  if (pkAfter >= 0.999) warnings.push('clip-risk');
+  if (duration < 0.03)  warnings.push('very-short');
+  return { wavBuffer: encodeWav(rs, TARGET_RATE), report: { sourceName: file.name, duration, pkBefore, pkAfter, warnings } };
+}
 
+function getOpts() {
   return {
-    wavBuffer: encodeWav16Mono(resampled, TARGET_RATE),
-    report: {
-      sourceName: file.name,
-      duration,
-      peakBefore,
-      peakAfter,
-      warnings
-    }
+    trim:      document.getElementById('trimToggle').checked,
+    normalize: document.getElementById('normalizeToggle').checked
   };
 }
 
-function getConversionOptions() {
-  return {
-    trimSilence: document.getElementById("trimToggle").checked,
-    normalize: document.getElementById("normalizeToggle").checked
-  };
+// ── report ────────────────────────────────────────────────────────────────────
+
+function renderReport(rows) {
+  const body    = document.getElementById('reportBody');
+  const summary = document.getElementById('reportSummary');
+  body.innerHTML = '';
+  if (!rows.length) { summary.textContent = 'No export report yet.'; return; }
+  let clips = 0, shorts = 0;
+  rows.forEach(r => {
+    if (r.report.warnings.includes('clip-risk'))  clips++;
+    if (r.report.warnings.includes('very-short')) shorts++;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.path}</td>
+      <td title="${r.report.sourceName}">${r.report.sourceName}</td>
+      <td>${r.report.duration.toFixed(3)}</td>
+      <td>${r.report.pkBefore.toFixed(3)}</td>
+      <td>${r.report.pkAfter.toFixed(3)}</td>
+      <td>${r.report.warnings.length ? r.report.warnings.join(', ') : '—'}</td>`;
+    body.appendChild(tr);
+  });
+  summary.textContent = `Exported ${rows.length} file(s). Warnings: ${clips} clip-risk, ${shorts} very-short.`;
 }
+
+// ── ZIP builder ───────────────────────────────────────────────────────────────
 
 async function buildZip() {
-  const total = FOLDERS.reduce((acc, folderId) => acc + folderState[folderId].length, 0);
-  if (total === 0) {
-    setStatus("No files loaded.");
-    return;
-  }
+  let total = 0;
+  for (const bank of state.banks) for (const voice of bank) total += voice.length;
+  if (total === 0) { setStatus('No files loaded.'); return; }
 
-  const options = getConversionOptions();
-  const zip = new JSZip();
-  const reportRows = [];
+  const opts    = getOpts();
+  const zip     = new JSZip();
+  const report  = [];
   let done = 0;
 
-  for (const folderId of FOLDERS) {
-    const files = folderState[folderId];
-    for (let i = 0; i < files.length; i++) {
-      const autoName = `${String(i + 1).padStart(2, "0")}.wav`;
-      setStatus(`Converting ${folderId}/${autoName} ...`, Math.round((done / total) * 100));
-      const converted = await convertAudioFile(files[i].file, options);
-      zip.file(`${folderId}/${autoName}`, converted.wavBuffer);
-      reportRows.push({
-        folder: folderId,
-        slot: autoName,
-        ...converted.report
-      });
-      done++;
-      setStatus("Converting files...", Math.round((done / total) * 100));
+  for (let b = 0; b < BANK_LETTERS.length; b++) {
+    for (let v = 0; v < VOICE_LABELS.length; v++) {
+      const files = state.banks[b][v];
+      for (let i = 0; i < files.length; i++) {
+        const name    = `${String(i + 1).padStart(2, '0')}.wav`;
+        const zipPath = `${BANK_LETTERS[b]}/${v + 1}/${name}`;
+        setStatus(`Converting ${zipPath}…`, Math.round(done / total * 100));
+        const conv = await convertFile(files[i].file, opts);
+        zip.file(zipPath, conv.wavBuffer);
+        report.push({ path: zipPath, report: conv.report });
+        done++;
+      }
     }
   }
 
-  setStatus("Packaging ZIP...", 100);
-  const zipBlob = await zip.generateAsync({ type: "blob" });
-  const url = URL.createObjectURL(zipBlob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "radiomusic-library-32k.zip";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  setStatus('Packaging ZIP…', 100);
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'radiomusic32-library.zip';
+  document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-  renderReport(reportRows);
-  setStatus("Done. ZIP downloaded.", 100);
+  renderReport(report);
+  setStatus('Done. ZIP downloaded.', 100);
 }
+
+// ── clear ─────────────────────────────────────────────────────────────────────
 
 function clearAll() {
   stopPreview();
-  FOLDERS.forEach((folderId) => {
-    folderState[folderId] = [];
-  });
-  renderAllLists();
+  for (let b = 0; b < BANK_LETTERS.length; b++) {
+    for (let v = 0; v < VOICE_LABELS.length; v++) {
+      state.banks[b][v] = [];
+    }
+  }
+  renderBankTabs();
+  renderCurrentBank();
   renderReport([]);
-  setStatus("Cleared all folders.", 0);
+  setStatus('Cleared all banks.', 0);
 }
 
-function init() {
-  renderFolders();
+// ── init ──────────────────────────────────────────────────────────────────────
 
-  document.getElementById("downloadZip").addEventListener("click", async () => {
-    const button = document.getElementById("downloadZip");
-    button.disabled = true;
-    try {
-      await buildZip();
-    } catch (error) {
-      console.error(error);
-      setStatus(`Conversion failed: ${error.message}`, 0);
-    } finally {
-      button.disabled = false;
-    }
+function init() {
+  renderBankTabs();
+  renderCurrentBank();
+
+  document.getElementById('downloadZip').addEventListener('click', async () => {
+    const btn = document.getElementById('downloadZip');
+    btn.disabled = true;
+    try { await buildZip(); }
+    catch (err) { console.error(err); setStatus(`Error: ${err.message}`, 0); }
+    finally { btn.disabled = false; }
   });
 
-  document.getElementById("clearAll").addEventListener("click", clearAll);
+  document.getElementById('clearAll').addEventListener('click', clearAll);
 }
 
 init();

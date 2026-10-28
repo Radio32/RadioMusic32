@@ -3,191 +3,125 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-body {
-  margin: 0;
-  background: #0f1115;
-  color: #eceff4;
+body { margin: 0; background: #0f1115; color: #eceff4; }
+
+.container { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+
+h1 { margin: 0 0 8px; }
+header p { margin: 0 0 20px; color: #c7cdd8; }
+
+/* ── bank tabs ─────────────────────────────────────────────────────────────── */
+.bank-section { margin-bottom: 14px; }
+
+.bank-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 12px;
 }
 
-.container {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 24px 16px 48px;
+.bank-tab {
+  width: 36px; height: 36px;
+  background: #263041; color: #aeb6c5;
+  border: 0; border-radius: 6px;
+  cursor: pointer; font-weight: 700; font-size: 0.95rem;
+  position: relative;
+  transition: background 0.1s;
 }
 
-h1 {
-  margin: 0 0 8px;
+.bank-tab:hover  { background: #3a4f6b; color: #eceff4; }
+.bank-tab.active { background: #4f7cff; color: #fff; }
+
+/* green dot when the bank contains files */
+.bank-tab.has-files::after {
+  content: '';
+  position: absolute; bottom: 3px; right: 3px;
+  width: 6px; height: 6px;
+  background: #44e06a; border-radius: 50%;
 }
 
-header p {
-  margin: 0 0 20px;
-  color: #c7cdd8;
-}
-
-.folders {
+/* ── voice columns ─────────────────────────────────────────────────────────── */
+.bank-voices {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
 
-.folder {
-  background: #181c24;
-  border: 1px solid #2a3140;
-  border-radius: 12px;
-  padding: 12px;
+.voice-column {
+  background: #181c24; border: 1px solid #2a3140;
+  border-radius: 12px; padding: 12px;
+}
+
+.voice-column h2 { margin: 0 0 8px; font-size: 0.95rem; }
+
+.voice-controls { margin-bottom: 8px; }
+.voice-controls input[type="file"] { width: 100%; }
+
+.hint { margin: 0; font-size: 0.82rem; color: #aeb6c5; }
+
+ol.file-list {
+  margin: 10px 0 0; padding-left: 0;
+  list-style: none; min-height: 140px;
 }
 
 .file-list.drag-over {
   outline: 2px dashed #4f7cff;
-  outline-offset: 2px;
-  border-radius: 8px;
-}
-
-.folder h2 {
-  margin: 0 0 8px;
-  font-size: 1rem;
-}
-
-.folder-controls {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.folder input[type="file"] {
-  width: 100%;
-}
-
-.hint {
-  margin: 0;
-  font-size: 0.85rem;
-  color: #aeb6c5;
-}
-
-ol.file-list {
-  margin: 10px 0 0;
-  padding-left: 20px;
-  min-height: 180px;
+  outline-offset: 2px; border-radius: 8px;
 }
 
 .file-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 6px;
-  padding: 6px 8px;
-  background: #141922;
-  border-radius: 8px;
+  display: flex; justify-content: space-between;
+  gap: 8px; align-items: center;
+  margin-bottom: 5px; padding: 5px 8px;
+  background: #141922; border-radius: 7px;
+  cursor: grab;
 }
 
 .file-row-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 0.85rem;
 }
 
-.file-actions {
-  display: flex;
-  gap: 6px;
-}
+.file-actions { display: flex; gap: 5px; flex-shrink: 0; }
 
 .file-row button {
-  background: #263041;
-  padding: 6px 8px;
-  font-size: 0.8rem;
+  background: #263041; padding: 4px 8px; font-size: 0.78rem;
 }
 
-.actions {
-  margin-top: 18px;
-  display: flex;
-  gap: 10px;
-}
-
+/* ── processing ────────────────────────────────────────────────────────────── */
 .processing {
-  margin-top: 16px;
-  background: #181c24;
-  border: 1px solid #2a3140;
-  border-radius: 12px;
-  padding: 12px;
+  margin-top: 14px; background: #181c24;
+  border: 1px solid #2a3140; border-radius: 12px; padding: 12px;
 }
+.processing h2 { margin: 0 0 10px; font-size: 1rem; }
+.processing label { display: block; margin-bottom: 6px; color: #c7cdd8; }
 
-.processing h2 {
-  margin: 0 0 10px;
-  font-size: 1rem;
-}
-
-.processing label {
-  display: block;
-  margin-bottom: 6px;
-  color: #c7cdd8;
-}
+/* ── actions ───────────────────────────────────────────────────────────────── */
+.actions { margin-top: 14px; display: flex; gap: 10px; }
 
 button {
-  border: 0;
-  border-radius: 8px;
-  background: #4f7cff;
-  color: white;
-  padding: 10px 14px;
-  cursor: pointer;
-  font-weight: 600;
+  border: 0; border-radius: 8px; background: #4f7cff;
+  color: white; padding: 10px 14px; cursor: pointer; font-weight: 600;
 }
+button.secondary { background: #3a4559; }
+button:disabled  { opacity: 0.5; cursor: not-allowed; }
 
-button.secondary {
-  background: #3a4559;
-}
+/* ── status ────────────────────────────────────────────────────────────────── */
+.status { margin-top: 14px; }
+progress { width: 100%; height: 14px; }
+#statusText { margin-top: 8px; color: #c7cdd8; }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.status {
-  margin-top: 16px;
-}
-
-progress {
-  width: 100%;
-  height: 14px;
-}
-
-#statusText {
-  margin-top: 8px;
-  color: #c7cdd8;
-}
-
+/* ── report ────────────────────────────────────────────────────────────────── */
 .report {
-  margin-top: 18px;
-  background: #181c24;
-  border: 1px solid #2a3140;
-  border-radius: 12px;
-  padding: 12px;
+  margin-top: 14px; background: #181c24;
+  border: 1px solid #2a3140; border-radius: 12px; padding: 12px;
 }
+.report h2 { margin: 0 0 8px; font-size: 1rem; }
+.report-table-wrap { overflow-x: auto; }
 
-.report h2 {
-  margin: 0 0 8px;
-  font-size: 1rem;
+.report-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.report-table th, .report-table td {
+  border-bottom: 1px solid #2a3140; padding: 5px 8px;
+  text-align: left; white-space: nowrap;
 }
-
-.report-table-wrap {
-  overflow-x: auto;
-}
-
-.report-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.86rem;
-}
-
-.report-table th,
-.report-table td {
-  border-bottom: 1px solid #2a3140;
-  padding: 6px 8px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.report-table th {
-  color: #c7cdd8;
-  font-weight: 600;
-}
+.report-table th { color: #c7cdd8; font-weight: 600; }
