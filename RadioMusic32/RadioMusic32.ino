@@ -1,31 +1,21 @@
 /*
  RadioMusic32
- 2-voice sample player for Eurorack
 
- Voice 1 : pure sample player — triggered by Reset CV (interrupt)
- Voice 2 : chromatic V/oct    — triggered by Channel CV, pitched by Time CV
+ Pot 1 (A9)   — sample index 0–15 (both voices)
+ Pot 2 (A7)   — filter cutoff for selected voice
+ CV 1 (pin 9) — trigger voice 1 (interrupt)
+ CV 2 (A6)    — trigger voice 2
+ CV 3 (A8)    — V/oct pitch for voice 2
 
- Normal mode
-   Channel pot  → global sample index (0–15), shown binary on LEDs
-   Short press  → cycle selected voice (LED 1 or 2 lit)
-   Long hold    → enter setup mode
+ Short press  — toggle selected voice (LED 1 or 2)
+ Hold + pot   — bank select A–P (LED binary), release confirms
+ Hold 1.5s    — enter/exit setup
 
- Bank select
-   Hold button while pot scrolls → bank A–P shown binary
-   Release before 1.5s           → confirm bank, return to normal
-
- Setup mode  (entered via 1.5s hold from normal or bank-select)
-   Short press  → cycle page 0–5
-   Long hold    → exit back to normal
-
-   Page 0  LED 1 solid    Voice 1 volume (chan) + decay (time)
-   Page 1  LED 2 solid    Voice 2 volume (chan) + decay (time)
-   Page 2  LED 3 solid    Voice 1 filter cutoff (chan) + resonance (time)
-   Page 3  LED 4 solid    Voice 2 filter cutoff (chan) + resonance (time)
-   Page 4  LED 1 blink    Lo-fi sample rate (chan) + enable (time)
-   Page 5  LED 2 blink    V/oct span (chan) + root trim (time)
-
- Auto-audition on pages 0–3 when a pot moves.
+ Setup pages (4):
+   0  LED 1  Voice 1: volume (pot1) + decay (pot2)
+   1  LED 2  Voice 2: volume (pot1) + decay (pot2)
+   2  LED 3  V/oct:   semitones (pot1) + fine tune (pot2)
+   3  LED 4  Lo-fi:   sample rate (pot1) + on/off (pot2)
 */
 
 #include <Bounce2.h>
@@ -39,370 +29,240 @@
 #include "LedControl.h"
 #include "RadioMusic32.h"
 
-// ─── pins ────────────────────────────────────────────────────────────────────
-#define CHAN_POT_PIN  A9
-#define CHAN_CV_PIN   A6
-#define TIME_POT_PIN  A7
-#define TIME_CV_PIN   A8
+#define POT_SAMPLE   A9
+#define POT_FILTER   A7
+#define CV_TRIG1      9
+#define CV_TRIG2     A6
+#define CV_VOCT      A8
 #define RESET_BUTTON  8
-#define RESET_CV      9
 
-// ─── ADC ─────────────────────────────────────────────────────────────────────
 #define ADC_BITS      13
-#define ADC_MAX_VALUE (1 << ADC_BITS)
+#define ADC_MAX       (1 << ADC_BITS)
 
-// ─── timing ──────────────────────────────────────────────────────────────────
-#define SHORT_PRESS_MS    10
-#define LONG_PRESS_MS   1500
-#define CTRL_UPDATE_MS    20
-#define AUDITION_MS      150
-#define BLINK_MS         200
+#define SHORT_MS      10
+#define LONG_MS     1500
+#define CTRL_MS       20
+#define AUDITION_MS  150
+#define TRIG_HI     2300
+#define TRIG_LO     1700
 
-// ─── trigger thresholds ──────────────────────────────────────────────────────
-#define TRIG_HIGH  2300
-#define TRIG_LOW   1700
+#define FILTER_RESONANCE  1.15f   // fixed slight bump, no user control
+#define DEFAULT_LOFI_RATE 32000
 
-// ─── EEPROM ──────────────────────────────────────────────────────────────────
-#define EEPROM_BANK_ADDR 0
+#define EEPROM_BANK 0
 
-// ─── defaults ────────────────────────────────────────────────────────────────
-#define DEFAULT_LOFI_RATE  32000
-#define VOCT_SEMITONES        48
-
-// ─── setup pages ─────────────────────────────────────────────────────────────
-#define SETUP_PAGES  6
-
-// ─── objects ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 AudioEngine  audioEngine;
 FileScanner  fileScanner;
 LedControl   ledControl;
-Bounce       resetBtn;
+Bounce       btn;
 
-// ─── mode ────────────────────────────────────────────────────────────────────
-enum Mode { MODE_NORMAL, MODE_BANK_SELECT, MODE_SETUP };
-Mode currentMode = MODE_NORMAL;
+enum Mode { NORMAL, BANK_SEL, SETUP };
+Mode mode = NORMAL;
 
-// ─── button ──────────────────────────────────────────────────────────────────
-elapsedMillis buttonTimer      = 0;
-bool          buttonHeld       = false;
-bool          longPressHandled = false;
+elapsedMillis btnTimer = 0;
+bool btnHeld = false, longDone = false, bankChanged = false;
 
-// ─── triggers ────────────────────────────────────────────────────────────────
-volatile bool resetTrigPending = false;
-bool          chanCvHigh       = false;
+volatile bool trig1Pending = false;
+bool trig2High = false;
 
-// ─── bank / voice / sample ───────────────────────────────────────────────────
-uint8_t selectedBank      = 0;        // 0–15 = A–P
-bool    bankSelectChanged = false;
-uint8_t globalSampleIndex = 0;        // 0–15, drives both voices
-uint8_t selectedVoice     = 0;        // 0 or 1 — indicated by single LED in normal mode
+uint8_t bank          = 0;
+uint8_t sampleIndex   = 0;
+uint8_t selectedVoice = 0;   // pot2 filter targets this voice
 
-// ─── voice params ────────────────────────────────────────────────────────────
-float    voiceVolume[VOICE_COUNT]       = {0.85f, 0.85f};
-uint16_t voiceDecayMs[VOICE_COUNT]      = {350,   350  };
-bool     voiceOneShot[VOICE_COUNT]      = {false, false };
-float    voiceFilterCutoff[VOICE_COUNT] = {8000.0f, 8000.0f};
-float    voiceFilterRes[VOICE_COUNT]    = {0.9f,    0.9f   };
+float voiceVol[VOICE_COUNT]   = {0.85f, 0.85f};
+uint16_t voiceDecay[VOICE_COUNT] = {350, 350};
+bool voiceOneShot[VOICE_COUNT]   = {false, false};
 
-// ─── lo-fi / V/oct ───────────────────────────────────────────────────────────
-uint16_t lofiSampleRate = DEFAULT_LOFI_RATE;
-bool     lofiEnabled    = true;
-int      voctSemitones  = VOCT_SEMITONES;
-float    voctRootOffset = 0.0f;
-float    currentVoct    = 1.0f;
-int      prevVoctAdc    = -1;
+int  v2Semitones = 0;
+float v2Fine     = 0.0f;
 
-// ─── UI helpers ──────────────────────────────────────────────────────────────
-uint8_t       setupPage   = 0;
-elapsedMillis auditTimer  = 0;
-elapsedMillis ctrlTimer   = 0;
-elapsedMillis blinkTimer  = 0;
-bool          blinkState  = false;
-int           prevChanPot = -1;
-int           prevTimePot = -1;
+uint16_t lofiRate    = DEFAULT_LOFI_RATE;
+bool     lofiEnabled = true;
+
+uint8_t       setupPage = 0;
+elapsedMillis auditTimer, ctrlTimer;
+int prevPot1 = -1, prevPot2 = -1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-float mapf(float x, float lo, float hi, float outLo, float outHi) {
-    x = constrain(x, lo, hi);
-    return outLo + (x - lo) / (hi - lo) * (outHi - outLo);
+float mapf(float x, float lo, float hi, float a, float b) {
+    return a + (constrain(x,lo,hi)-lo)/(hi-lo)*(b-a);
+}
+int ravg(uint8_t pin, uint8_t n) {
+    int32_t s=0; for(uint8_t i=0;i<n;i++) s+=analogRead(pin); return s/n;
 }
 
-int readAvg(uint8_t pin, uint8_t n) {
-    int32_t s = 0;
-    for (uint8_t i = 0; i < n; i++) s += analogRead(pin);
-    return (int)(s / n);
+void trig1ISR() { trig1Pending = true; }
+
+void updateV2Speed() {
+    float semi = v2Semitones + v2Fine/100.0f;
+    audioEngine.setVoicePlaybackSpeed(1, powf(2.0f, semi/12.0f));
 }
 
-void resetCvISR() { resetTrigPending = true; }
-
-// ─── V/oct ───────────────────────────────────────────────────────────────────
-float calculateVoct(int adc) {
-    float semi = ((float)adc - (float)(ADC_MAX_VALUE / 2))
-                 * (float)voctSemitones / (float)ADC_MAX_VALUE
-                 + voctRootOffset;
-    return powf(2.0f, semi / 12.0f);
+AudioFileInfo* getFile(uint8_t v) {
+    uint8_t n = fileScanner.numFiles[bank][v];
+    if (!n) return NULL;
+    return &fileScanner.fileInfos[bank][v][sampleIndex < n ? sampleIndex : n-1];
 }
 
-// ─── file lookup ─────────────────────────────────────────────────────────────
-AudioFileInfo* getFile(uint8_t voice) {
-    uint8_t count = fileScanner.numFiles[selectedBank][voice];
-    if (!count) return NULL;
-    uint8_t idx = (globalSampleIndex < count) ? globalSampleIndex : count - 1;
-    return &fileScanner.fileInfos[selectedBank][voice][idx];
-}
-
-// ─── voice trigger ───────────────────────────────────────────────────────────
 void triggerVoice(uint8_t v) {
     AudioFileInfo* fi = getFile(v);
-    if (!fi) return;
-    if (v == 1) audioEngine.setVoicePlaybackSpeed(1, currentVoct);
-    audioEngine.triggerVoice(v, fi);
+    if (fi) audioEngine.triggerVoice(v, fi);
 }
 
-void applyVoiceParams(uint8_t v) {
-    audioEngine.setVoiceVolume(v, voiceVolume[v]);
-    audioEngine.setVoiceDecayMs(v, voiceDecayMs[v], voiceOneShot[v]);
-    audioEngine.setVoiceFilter(v, voiceFilterCutoff[v], voiceFilterRes[v]);
+void applyVoice(uint8_t v) {
+    audioEngine.setVoiceVolume(v, voiceVol[v]);
+    audioEngine.setVoiceDecayMs(v, voiceDecay[v], voiceOneShot[v]);
+}
+
+// ─── pot 2 → filter cutoff for selected voice (live) ─────────────────────────
+void updateFilterPot() {
+    int raw = ravg(POT_FILTER, 8);
+    static int prev = -1;
+    if (prev >= 0 && abs(raw - prev) < 30) return;
+    prev = raw;
+    float cutoff = mapf(raw, 0, ADC_MAX-1, 80.0f, 12000.0f);
+    audioEngine.setVoiceFilter(selectedVoice, cutoff, FILTER_RESONANCE);
+}
+
+// ─── CV 3 → V/oct for voice 2 (live) ─────────────────────────────────────────
+void updateVoct() {
+    int raw = analogRead(CV_VOCT);
+    static int prev = -1;
+    if (prev >= 0 && abs(raw - prev) < 16) return;
+    prev = raw;
+    float semi = mapf(raw, 0, ADC_MAX-1, -24.0f, 24.0f) + v2Semitones + v2Fine/100.0f;
+    audioEngine.setVoicePlaybackSpeed(1, powf(2.0f, semi/12.0f));
 }
 
 // ─── LEDs ────────────────────────────────────────────────────────────────────
 void updateLEDs() {
-    if (currentMode == MODE_SETUP) {
-        bool extended = (setupPage >= 4);
-        if (blinkTimer >= BLINK_MS) { blinkTimer = 0; blinkState = !blinkState; }
-
-        if (!extended) {
-            ledControl.single(setupPage);       // LED 1-4 solid for pages 0-3
-        } else {
-            if (blinkState) ledControl.single(setupPage - 4);
-            else            ledControl.multi(0);
-        }
-        ledControl.showReset(true);
-        return;
-    }
-
-    if (currentMode == MODE_BANK_SELECT) {
-        ledControl.multi(selectedBank & 0x0F);
-        ledControl.showReset(true);
-        return;
-    }
-
-    // Normal: single LED = selected voice (1 or 2)
+    if (mode == SETUP)    { ledControl.single(setupPage); ledControl.showReset(true);  return; }
+    if (mode == BANK_SEL) { ledControl.multi(bank & 0x0F); ledControl.showReset(true); return; }
     ledControl.single(selectedVoice);
     ledControl.showReset(false);
 }
 
 // ─── button ──────────────────────────────────────────────────────────────────
 void handleButton() {
-    resetBtn.update();
-
-    if (resetBtn.rose()) {
-        buttonTimer       = 0;
-        buttonHeld        = true;
-        longPressHandled  = false;
-        bankSelectChanged = false;
-        // Immediately enter bank-select while held
-        if (currentMode == MODE_NORMAL) currentMode = MODE_BANK_SELECT;
+    btn.update();
+    if (btn.rose()) {
+        btnTimer = 0; btnHeld = true; longDone = false; bankChanged = false;
+        if (mode == NORMAL) mode = BANK_SEL;
     }
-
-    // Long hold → enter/exit setup
-    if (buttonHeld && !longPressHandled && buttonTimer >= LONG_PRESS_MS) {
-        longPressHandled = true;
-        if (currentMode == MODE_BANK_SELECT) {
-            // Save bank if changed, then go to setup
-            if (bankSelectChanged) EEPROM.write(EEPROM_BANK_ADDR, selectedBank);
-            currentMode = MODE_SETUP;
-            setupPage   = 0;
-            prevChanPot = -1;
-            prevTimePot = -1;
-        } else if (currentMode == MODE_SETUP) {
-            currentMode = MODE_NORMAL;
+    if (btnHeld && !longDone && btnTimer >= LONG_MS) {
+        longDone = true;
+        if (mode == BANK_SEL) {
+            if (bankChanged) EEPROM.write(EEPROM_BANK, bank);
+            mode = SETUP; setupPage = 0; prevPot1 = prevPot2 = -1;
+        } else if (mode == SETUP) {
+            mode = NORMAL;
         }
     }
-
-    if (resetBtn.fell()) {
-        if (!longPressHandled && buttonTimer >= SHORT_PRESS_MS) {
-            if (currentMode == MODE_BANK_SELECT) {
-                // Short release: confirm bank, return to normal
-                if (bankSelectChanged) EEPROM.write(EEPROM_BANK_ADDR, selectedBank);
-                currentMode = MODE_NORMAL;
-
-            } else if (currentMode == MODE_SETUP) {
-                // Cycle setup page
-                setupPage = (setupPage + 1) % SETUP_PAGES;
-                prevChanPot = -1;
-                prevTimePot = -1;
-
-            } else {
-                // Normal: cycle selected voice
-                selectedVoice = (selectedVoice + 1) % VOICE_COUNT;
-            }
+    if (btn.fell()) {
+        if (!longDone && btnTimer >= SHORT_MS) {
+            if      (mode == BANK_SEL) { if (bankChanged) EEPROM.write(EEPROM_BANK, bank); mode = NORMAL; }
+            else if (mode == SETUP)    { setupPage = (setupPage+1)%4; prevPot1 = prevPot2 = -1; }
+            else                       { selectedVoice = (selectedVoice+1) % VOICE_COUNT; }
         }
-        buttonHeld       = false;
-        buttonTimer      = 0;
-        longPressHandled = false;
+        btnHeld = false; btnTimer = 0; longDone = false;
     }
 }
 
 // ─── triggers ────────────────────────────────────────────────────────────────
 void updateTriggers() {
-    if (resetTrigPending) {
-        resetTrigPending = false;
-        triggerVoice(0);
-    }
-
-    int chanCv = analogRead(CHAN_CV_PIN);
-    if (!chanCvHigh && chanCv >= TRIG_HIGH) {
-        chanCvHigh = true;
-        triggerVoice(1);
-    } else if (chanCvHigh && chanCv <= TRIG_LOW) {
-        chanCvHigh = false;
-    }
-}
-
-// ─── V/oct continuous ────────────────────────────────────────────────────────
-void updateVoct() {
-    int raw = analogRead(TIME_CV_PIN);
-    if (prevVoctAdc < 0 || abs(raw - prevVoctAdc) > 16) {
-        prevVoctAdc = raw;
-        currentVoct = calculateVoct(raw);
-        audioEngine.setVoicePlaybackSpeed(1, currentVoct);
-    }
+    if (trig1Pending) { trig1Pending = false; triggerVoice(0); }
+    int cv2 = analogRead(CV_TRIG2);
+    if (!trig2High && cv2 >= TRIG_HI) { trig2High = true;  triggerVoice(1); }
+    else if (trig2High && cv2 <= TRIG_LO) trig2High = false;
 }
 
 // ─── controls ────────────────────────────────────────────────────────────────
 void updateControls() {
-    if (ctrlTimer < CTRL_UPDATE_MS) return;
+    if (ctrlTimer < CTRL_MS) return;
     ctrlTimer = 0;
 
-    int chanPot = readAvg(CHAN_POT_PIN, 12);
-    int timePot = readAvg(TIME_POT_PIN, 12);
+    int p1 = ravg(POT_SAMPLE, 12);
+    int p2 = ravg(POT_FILTER, 12);
+    bool c1 = (prevPot1 < 0 || abs(p1-prevPot1) > 40);
+    bool c2 = (prevPot2 < 0 || abs(p2-prevPot2) > 40);
 
-    bool chanChanged = (prevChanPot < 0 || abs(chanPot - prevChanPot) > 40);
-    bool timeChanged = (prevTimePot < 0 || abs(timePot - prevTimePot) > 40);
-
-    if (currentMode == MODE_BANK_SELECT) {
-        uint8_t nb = (uint8_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 0, BANKS-1);
-        if (nb != selectedBank) { selectedBank = nb; bankSelectChanged = true; }
-        prevChanPot = chanPot;
-        prevTimePot = timePot;
-        return;
-    }
-
-    if (currentMode == MODE_NORMAL) {
-        // Pot selects global sample index for both voices
-        globalSampleIndex = (uint8_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 0, MAX_FILES_PER_SLOT-1);
-        prevChanPot = chanPot;
-        prevTimePot = timePot;
-        return;
-    }
-
-    // Setup pages ─────────────────────────────────────────────────────────────
-    if (currentMode == MODE_SETUP) {
+    if (mode == BANK_SEL) {
+        uint8_t nb = (uint8_t)mapf(p1, 0, ADC_MAX-1, 0, BANKS-1);
+        if (nb != bank) { bank = nb; bankChanged = true; }
+    } else if (mode == NORMAL) {
+        sampleIndex = (uint8_t)mapf(p1, 0, ADC_MAX-1, 0, MAX_FILES_PER_SLOT-1);
+    } else if (mode == SETUP) {
         switch (setupPage) {
-            case 0:  // Voice 1: volume + decay
-                voiceVolume[0]  = mapf(chanPot, 0, ADC_MAX_VALUE-1, 0.0f, 1.0f);
-                voiceDecayMs[0] = (uint16_t)mapf(timePot, 0, ADC_MAX_VALUE-1, 20.0f, 3000.0f);
-                voiceOneShot[0] = timePot > (ADC_MAX_VALUE - 256);
-                applyVoiceParams(0);
-                break;
-
-            case 1:  // Voice 2: volume + decay
-                voiceVolume[1]  = mapf(chanPot, 0, ADC_MAX_VALUE-1, 0.0f, 1.0f);
-                voiceDecayMs[1] = (uint16_t)mapf(timePot, 0, ADC_MAX_VALUE-1, 20.0f, 3000.0f);
-                voiceOneShot[1] = timePot > (ADC_MAX_VALUE - 256);
-                applyVoiceParams(1);
-                break;
-
-            case 2:  // Voice 1: filter cutoff + resonance
-                voiceFilterCutoff[0] = mapf(chanPot, 0, ADC_MAX_VALUE-1, 200.0f, 12000.0f);
-                voiceFilterRes[0]    = mapf(timePot, 0, ADC_MAX_VALUE-1, 0.7f, 4.3f);
-                audioEngine.setVoiceFilter(0, voiceFilterCutoff[0], voiceFilterRes[0]);
-                break;
-
-            case 3:  // Voice 2: filter cutoff + resonance
-                voiceFilterCutoff[1] = mapf(chanPot, 0, ADC_MAX_VALUE-1, 200.0f, 12000.0f);
-                voiceFilterRes[1]    = mapf(timePot, 0, ADC_MAX_VALUE-1, 0.7f, 4.3f);
-                audioEngine.setVoiceFilter(1, voiceFilterCutoff[1], voiceFilterRes[1]);
-                break;
-
-            case 4:  // Lo-fi
-                lofiSampleRate = (uint16_t)mapf(chanPot, 0, ADC_MAX_VALUE-1, 8000.0f, 32000.0f);
-                lofiEnabled    = timePot > 96;
+            case 0:
+                voiceVol[0]   = mapf(p1, 0, ADC_MAX-1, 0.0f, 1.0f);
+                voiceDecay[0] = (uint16_t)mapf(p2, 0, ADC_MAX-1, 20.0f, 3000.0f);
+                voiceOneShot[0] = p2 > ADC_MAX - 256;
+                applyVoice(0); break;
+            case 1:
+                voiceVol[1]   = mapf(p1, 0, ADC_MAX-1, 0.0f, 1.0f);
+                voiceDecay[1] = (uint16_t)mapf(p2, 0, ADC_MAX-1, 20.0f, 3000.0f);
+                voiceOneShot[1] = p2 > ADC_MAX - 256;
+                applyVoice(1); break;
+            case 2:
+                v2Semitones = (int)mapf(p1, 0, ADC_MAX-1, -24.0f, 24.0f);
+                v2Fine      = mapf(p2, 0, ADC_MAX-1, -50.0f, 50.0f);
+                updateV2Speed(); break;
+            case 3:
+                lofiRate    = (uint16_t)mapf(p1, 0, ADC_MAX-1, 8000.0f, 32000.0f);
+                lofiEnabled = p2 > (int)(ADC_MAX * 0.2f);
                 audioEngine.setLofiEnabled(lofiEnabled);
-                audioEngine.setLofiSampleRate(lofiSampleRate);
-                break;
-
-            case 5:  // V/oct calibration
-                voctSemitones  = (int)mapf(chanPot, 0, ADC_MAX_VALUE-1, 24.0f, 96.0f);
-                voctRootOffset = mapf(timePot, 0, ADC_MAX_VALUE-1, -12.0f, 12.0f);
-                currentVoct    = calculateVoct(prevVoctAdc >= 0 ? prevVoctAdc : ADC_MAX_VALUE/2);
-                audioEngine.setVoicePlaybackSpeed(1, currentVoct);
-                break;
+                audioEngine.setLofiSampleRate(lofiRate); break;
         }
-
-        // Auto-audition on per-voice pages while pot moves
-        if ((chanChanged || timeChanged) && auditTimer >= AUDITION_MS && setupPage < 4) {
-            auditTimer = 0;
-            // Pages 0-1 → voice 0-1, pages 2-3 → filter change on voice 0-1
-            triggerVoice(setupPage < 2 ? setupPage : setupPage - 2);
+        if ((c1||c2) && auditTimer >= AUDITION_MS && setupPage < 2) {
+            auditTimer = 0; triggerVoice(setupPage);
         }
     }
-
-    prevChanPot = chanPot;
-    prevTimePot = timePot;
+    prevPot1 = p1; prevPot2 = p2;
 }
 
-// ─── SD ──────────────────────────────────────────────────────────────────────
-bool openSD() {
-    SPI.setMOSI(7);
-    SPI.setSCK(14);
-    return SD.begin(SS);
-}
-
-// ─── setup ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 void setup() {
     analogReadRes(ADC_BITS);
     ledControl.init();
     ledControl.single(0);
 
-    if (!openSD()) reBoot(0);
+    SPI.setMOSI(7); SPI.setSCK(14);
+    if (!SD.begin(SS)) reBoot(0);
 
     fileScanner.scan();
 
-    uint8_t saved = EEPROM.read(EEPROM_BANK_ADDR);
-    if (saved < BANKS) selectedBank = saved;
+    uint8_t saved = EEPROM.read(EEPROM_BANK);
+    if (saved < BANKS) bank = saved;
 
-    // Find a bank with files if saved one is empty
     bool found = false;
-    for (uint8_t v = 0; v < VOICE_COUNT && !found; v++)
-        if (fileScanner.numFiles[selectedBank][v] > 0) found = true;
+    for (uint8_t v=0; v<VOICE_COUNT && !found; v++) if (fileScanner.numFiles[bank][v]) found=true;
     if (!found) {
-        for (uint8_t b = 0; b < BANKS && !found; b++)
-            for (uint8_t v = 0; v < VOICE_COUNT && !found; v++)
-                if (fileScanner.numFiles[b][v] > 0) { selectedBank = b; found = true; }
+        for (uint8_t b=0; b<BANKS && !found; b++)
+            for (uint8_t v=0; v<VOICE_COUNT && !found; v++)
+                if (fileScanner.numFiles[b][v]) { bank=b; found=true; }
         if (!found) reBoot(0);
     }
 
     audioEngine.init(DEFAULT_LOFI_RATE);
-    for (uint8_t v = 0; v < VOICE_COUNT; v++) applyVoiceParams(v);
+    for (uint8_t v=0; v<VOICE_COUNT; v++) applyVoice(v);
+    // Set both voice filters open by default
+    audioEngine.setVoiceFilter(0, 12000.0f, FILTER_RESONANCE);
+    audioEngine.setVoiceFilter(1, 12000.0f, FILTER_RESONANCE);
 
     pinMode(RESET_BUTTON, INPUT);
-    resetBtn.attach(RESET_BUTTON);
-    resetBtn.interval(5);
-
-    pinMode(RESET_CV, INPUT);
-    attachInterrupt(RESET_CV, resetCvISR, RISING);
+    btn.attach(RESET_BUTTON); btn.interval(5);
+    pinMode(CV_TRIG1, INPUT);
+    attachInterrupt(CV_TRIG1, trig1ISR, RISING);
 }
 
-// ─── loop ────────────────────────────────────────────────────────────────────
 void loop() {
     handleButton();
-    updateVoct();
-    updateControls();
-    updateTriggers();
+    updateFilterPot();   // pot 2 → cutoff for selected voice
+    updateVoct();        // CV 3 → pitch for voice 2
+    updateControls();    // pot 1 + setup pages
+    updateTriggers();    // CV 1 + CV 2
     updateLEDs();
-
     if (audioEngine.update() || audioEngine.error) reBoot(0);
 }
