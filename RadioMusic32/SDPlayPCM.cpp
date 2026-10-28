@@ -27,7 +27,7 @@
 #include "SDPlayPCM.h"
 
 #include "spi_interrupt.h"
-#include "RadioMusic.h"
+#include "RadioMusic32.h"
 
 #ifdef DEBUG_PCM_PLAYER
 #define D(x) x

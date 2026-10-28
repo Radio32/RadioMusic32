@@ -1,7 +1,7 @@
 #include "FileScanner.h"
 #include "AudioFileInfo.h"
 
-#include "RadioMusic.h"
+#include "RadioMusic32.h"
 
 #ifdef DEBUG_FILES
 #define D(x) x

@@ -1,7 +1,7 @@
 #include <SD.h>
 #include "Settings.h"
 
-#include "RadioMusic.h"
+#include "RadioMusic32.h"
 
 #ifdef DEBUG_SETTINGS
 #define D(x) x

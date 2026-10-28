@@ -15,7 +15,7 @@
 #include "AudioEngine.h"
 #include "FileScanner.h"
 #include "LedControl.h"
-#include "RadioMusic.h"
+#include "RadioMusic32.h"
 #include "Settings.h"
 
 #define CHAN_POT_PIN A9

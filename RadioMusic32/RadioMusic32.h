@@ -1,5 +1,5 @@
-#ifndef RadioMusic_h
-#define RadioMusic_h
+#ifndef RadioMusic32_h
+#define RadioMusic32_h
 
 // Debug Flags
 //#define DEBUG

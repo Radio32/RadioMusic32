@@ -14,7 +14,7 @@ This repository is based on the original [Tom Whitwell Radio Music project](http
 
 - Full wiki: <https://github.com/TomWhitwell/RadioMusic/wiki>
 - Hardware files: [RadioMusicHardware/](./RadioMusicHardware)
-- Original firmware source: [RadioMusic/](./RadioMusic)
+- Original firmware source (now customized): [RadioMusic32/](./RadioMusic32)
 
 Original Radio Music is open hardware and CC-BY-SA licensed. See [License](#license).
 
@@ -22,7 +22,7 @@ Original Radio Music is open hardware and CC-BY-SA licensed. See [License](#lice
 
 ## Current custom firmware behavior
 
-Implemented in [RadioMusic/](./RadioMusic):
+Implemented in [RadioMusic32/](./RadioMusic32):
 
 - Trigger mapping:
   - Voice 1: Reset CV input
@@ -73,7 +73,7 @@ If a folder has fewer than 16 files, out-of-range slots clamp to the last availa
 From repository root:
 
 ```bash
-arduino-cli compile --fqbn teensy:avr:teensy31 ./RadioMusic
+arduino-cli compile --fqbn teensy:avr:teensy31 ./RadioMusic32
 ```
 
 Flash using your preferred Teensy workflow (Arduino IDE or Teensy loader).
@@ -101,11 +101,11 @@ To publish on GitHub Pages, serve the `docs/` directory as Pages source.
 
 ## Repository layout (important paths)
 
-- firmware sketch: [RadioMusic/RadioMusic.ino](./RadioMusic/RadioMusic.ino)
-- audio engine: [RadioMusic/AudioEngine.h](./RadioMusic/AudioEngine.h), [RadioMusic/AudioEngine.cpp](./RadioMusic/AudioEngine.cpp)
-- lo-fi effect: [RadioMusic/AudioEffectLoFi.h](./RadioMusic/AudioEffectLoFi.h), [RadioMusic/AudioEffectLoFi.cpp](./RadioMusic/AudioEffectLoFi.cpp)
-- settings parser: [RadioMusic/Settings.h](./RadioMusic/Settings.h), [RadioMusic/Settings.cpp](./RadioMusic/Settings.cpp)
-- custom notes: [RadioMusic/Radio_Music_Next.txt](./RadioMusic/Radio_Music_Next.txt)
+- firmware sketch: [RadioMusic32/RadioMusic32.ino](./RadioMusic32/RadioMusic32.ino)
+- audio engine: [RadioMusic32/AudioEngine.h](./RadioMusic32/AudioEngine.h), [RadioMusic32/AudioEngine.cpp](./RadioMusic32/AudioEngine.cpp)
+- lo-fi effect: [RadioMusic32/AudioEffectLoFi.h](./RadioMusic32/AudioEffectLoFi.h), [RadioMusic32/AudioEffectLoFi.cpp](./RadioMusic32/AudioEffectLoFi.cpp)
+- settings parser: [RadioMusic32/Settings.h](./RadioMusic32/Settings.h), [RadioMusic32/Settings.cpp](./RadioMusic32/Settings.cpp)
+- custom notes: [RadioMusic32/RadioMusic32_Notes.txt](./RadioMusic32/RadioMusic32_Notes.txt)
 
 ---
 

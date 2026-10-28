@@ -3,7 +3,7 @@
 #include <Audio.h>
 #include <SD.h>
 
-#include "RadioMusic.h"
+#include "RadioMusic32.h"
 
 #ifdef DEBUG_WAV
 #define D(x) x
