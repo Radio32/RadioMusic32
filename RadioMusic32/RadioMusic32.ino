@@ -35,6 +35,7 @@
 #define CV_TRIG2     A6
 #define CV_VOCT      A8
 #define RESET_BUTTON  8
+#define SD_CS         10
 
 #define ADC_BITS      13
 #define ADC_MAX       (1 << ADC_BITS)
@@ -228,8 +229,10 @@ void setup() {
     ledControl.init();
     ledControl.single(0);
 
-    SPI.setMOSI(7); SPI.setSCK(14);
-    if (!SD.begin(SS)) reBoot(0);
+    SPI.setMOSI(7);
+    SPI.setSCK(14);
+    SPI.setMISO(12);
+    if (!SD.begin(SD_CS)) reBoot(0);
 
     fileScanner.scan();
 
