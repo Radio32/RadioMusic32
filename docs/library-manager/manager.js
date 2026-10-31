@@ -1,7 +1,7 @@
 const BANK_LETTERS  = Array.from('ABCDEFGHIJKLMNOP');
 const VOICE_LABELS  = ['Voice 1 — Sampler', 'Voice 2 — Chromatic (V/oct)'];
 const MAX_FILES     = 16;
-const TARGET_RATE   = 32000;
+const TARGET_RATE   = 44100;   // firmware output rate: no rate conversion on voice 1
 const SIL_THRESHOLD = 0.003;
 
 // state.banks[bankIndex][voiceIndex] = [{id, file}, ...]
@@ -244,16 +244,18 @@ function normalize(s, target = 0.95) {
   return out;
 }
 
-function resample(s, srcRate, dstRate) {
+// Band-limited resample via the browser's own resampler (anti-aliased).
+async function resample(s, srcRate, dstRate) {
   if (srcRate === dstRate) return s;
-  const n = Math.max(1, Math.round(s.length * dstRate / srcRate));
-  const out = new Float32Array(n);
-  const r = srcRate / dstRate;
-  for (let i = 0; i < n; i++) {
-    const p = i * r, j = Math.floor(p), f = p - j;
-    out[i] = (s[j] || 0) + ((s[j + 1] || s[j] || 0) - (s[j] || 0)) * f;
-  }
-  return out;
+  const n   = Math.max(1, Math.round(s.length * dstRate / srcRate));
+  const off = new OfflineAudioContext(1, n, dstRate);
+  const buf = off.createBuffer(1, s.length, srcRate);
+  buf.copyToChannel(s, 0);
+  const src = off.createBufferSource();
+  src.buffer = buf;
+  src.connect(off.destination);
+  src.start();
+  return (await off.startRendering()).getChannelData(0);
 }
 
 function encodeWav(s, rate) {
@@ -284,7 +286,7 @@ async function convertFile(file, opts) {
   const pkBefore = peakOf(mono);
   if (opts.trim)      mono = trimSilence(mono);
   if (opts.normalize) mono = normalize(mono, 0.95);
-  const rs       = resample(mono, dec.sampleRate, TARGET_RATE);
+  const rs       = await resample(mono, dec.sampleRate, TARGET_RATE);
   const pkAfter  = peakOf(rs);
   const duration = rs.length / TARGET_RATE;
   const warnings = [];

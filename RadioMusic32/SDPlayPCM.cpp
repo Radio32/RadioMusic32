@@ -28,6 +28,7 @@
 
 #include "spi_interrupt.h"
 #include "RadioMusic32.h"
+#include "SincTable.h"
 
 #ifdef DEBUG_PCM_PLAYER
 #define D(x) x
@@ -121,6 +122,11 @@ bool SDPlayPCM::skipTo(uint32_t dataPosition) {
 	bytesAvailable = 0;
 	bufferFillPosition = 0;
 	readError = false;
+	phase = 0;
+	memset(history, 0, sizeof(history));
+	historyPos = 0;
+	antiAlias.reset();
+	antiImage.reset();
 	playing = true;
 	finished = false;
 	__enable_irq()
@@ -259,9 +265,41 @@ void SDPlayPCM::stop(void) {
 	}
 }
 
+static inline int32_t saturate16(int32_t s) {
+	if (s > 32767) return 32767;
+	if (s < -32768) return -32768;
+	return s;
+}
+
+void SDPlayPCM::setEmulation(float sampleRate, bool twelveBit) {
+	__disable_irq();
+	emulationRate = sampleRate;
+	quantMask = twelveBit ? ~0xF : ~0;
+	quantHalf = twelveBit ? 8 : 0;
+	__enable_irq();
+	updateFilters();
+}
+
+void SDPlayPCM::updateFilters() {
+	const float step = playbackSpeed * sampleRateSpeed;
+	const float fileRate = sampleRateSpeed * 44100.0f;
+
+	// Recording bandwidth relative to the file rate. Lives in the input
+	// domain, so like the S950's clocked filter it follows pitch.
+	float band = 0.5f;
+	if (emulationRate > 0.0f && emulationRate < fileRate) {
+		band = 0.45f * emulationRate / fileRate;
+	}
+	// Pitching up: keep everything below the output Nyquist.
+	float aa = 0.45f / step;
+	antiAlias.setCutoff(band < aa ? band : aa);
+
+	// Pitching down: cut at the playback clock's Nyquist.
+	antiImage.setCutoff(step < 1.0f ? 0.45f * step : 0.45f);
+}
+
 void SDPlayPCM::update(void) {
 
-	uint16_t n = AUDIO_BLOCK_SAMPLES;
 	audio_block_t *block;
 	uint16_t i = 0;
 
@@ -271,8 +309,10 @@ void SDPlayPCM::update(void) {
 	if (!playing)
 		return;
 
+	const int32_t frameBytes = bytesPerSample * channels;
+
 	if(!looping) {
-		if(finished || bytesLeftInFile == 0) {
+		if((finished || bytesLeftInFile == 0) && bytesAvailable < frameBytes) {
 			D(
 				debugHeader();
 				Serial.println("File finished");
@@ -291,7 +331,9 @@ void SDPlayPCM::update(void) {
 	inUpdate = true;
 	read = 0;
 	speed = playbackSpeed * sampleRateSpeed;
-	bytesRequired = ceil(AUDIO_BLOCK_SAMPLES * speed) * bytesPerSample * channels;
+	const uint32_t step = (uint32_t)(speed * 65536.0f);
+	// Whole input frames this block will consume
+	bytesRequired = ((phase + step * AUDIO_BLOCK_SAMPLES) >> 16) * frameBytes;
 
 	if (bytesRequired > AUDIOBUFSIZE) {
 		bytesRequired = AUDIOBUFSIZE;
@@ -302,65 +344,14 @@ void SDPlayPCM::update(void) {
 	}
 
 	if (bytesAvailable < bytesRequired) {
-
-		bool bufferReadOk = false;
-		if (bytesRequired
-				< AUDIO_BLOCK_SAMPLES * bytesPerSample * channels) {
-			bufferReadOk = fillBuffer(AUDIO_BLOCK_SAMPLES * bytesPerSample * channels);
+		bool bufferReadOk;
+		if (bytesRequired < AUDIO_BLOCK_SAMPLES * frameBytes) {
+			bufferReadOk = fillBuffer(AUDIO_BLOCK_SAMPLES * frameBytes);
 		} else {
 			bufferReadOk = fillBuffer(bytesRequired);
 		}
-B(
-		if (read % bytesPerSample != 0) {
-			debugHeader();
-			Serial.print("Read not aligned ");
-			Serial.print(read % bytesPerSample);
-			Serial.print("\t");
-			Serial.print(read);
-			Serial.print("\t");
-			Serial.println(bytesRequired);
-		}
-);
 
-		if (read >= 0 && read < bytesRequired) {
-			B(
-				if (bytesAvailable % bytesPerSample != 0)
-				{
-					debugHeader();
-					Serial.println("Bytes available not aligned");
-				}
-
-				if (read % bytesPerSample != 0) {
-					debugHeader();
-					Serial.print("Read not aligned ");
-					Serial.print(read % bytesPerSample);
-					Serial.print("\t");
-					Serial.print(read);
-					Serial.print("\t");
-					Serial.println(bytesRequired);
-				}
-				if(!finished) {
-					debugHeader();
-					Serial.print("Not enough data from fill buffer ");
-					Serial.print(bytesRequired);
-					Serial.print("\t");
-					Serial.print(bytesAvailable);
-					Serial.print("\t");
-					Serial.println(fileAvailable());
-				} else {
-					debugHeader();
-					Serial.print("File finished ");
-					Serial.print(bytesRequired);
-					Serial.print("\t");
-					Serial.print(bytesAvailable);
-					Serial.print("\t");
-					Serial.println(fileAvailable());
-				}
-			);
-			n = min(AUDIO_BLOCK_SAMPLES,
-					floor(bytesAvailable / (bytesPerSample * channels))
-							/ speed);
-		} else if (readError || !bufferReadOk) {
+		if (!bufferReadOk) {
 			D(Serial.print("Read error. ");Serial.println(errors););
 			errors++;
 			readError = false;
@@ -370,102 +361,72 @@ B(
 			}
 			transmit(block);
 			release(block);
+			inUpdate = false;
 			updates++;
 			return;
 		}
-
 	}
 
 	int16_t* out = block->data;
+	const int32_t framesAvailable = bytesAvailable / frameBytes;
+	const int32_t mask = quantMask;
+	const int32_t half = quantHalf;
+	int32_t framesUsed = 0;
+	uint32_t pos = readPositionInBytes;
 
-	l0 = 0;
-	lowSamplePos = 0;
-	float sp = speed * channels;
-
-	// Check for buffer wrapping here so we don't do it 128 times in the loop.
-	boolean bufferWrap = ((n*sp) * bytesPerSample) + readPositionInBytes >= AUDIOBUFSIZE;
-	if (bytesPerSample == 2) {
-		// 16 bit copy
-		if(bufferWrap) {
-			for (i = 0; i < n; i++) {
-				lowSamplePos = (i * speed);
-				l0 = readPositionInBytes + (lowSamplePos << channels);
-				if (l0 >= AUDIOBUFSIZE) l0 -= AUDIOBUFSIZE;
-				memcpy(out++, &audioBuffer[l0],2);
-			}
-		} else {
-			// We won't wrap the buffer edge so don't check
-			for (i = 0; i < n; i++) {
-				lowSamplePos = (i * speed);
-				l0 = readPositionInBytes + (lowSamplePos << channels);
-				memcpy(out++, &audioBuffer[l0],2);
-			}
-		}
-	} else if (bytesPerSample == 3) {
-
-		if(channels == 1) {
-			if(bufferWrap) {
-				// 24 bit copy.
-				for (i = 0; i < n; i++) {
-					lowSamplePos = (i * speed);
-					l0 = readPositionInBytes + (lowSamplePos * 3);
-					if (l0 >= AUDIOBUFSIZE) l0 -= AUDIOBUFSIZE;
-					*out++ = (audioBuffer[l0] | (audioBuffer[++l0] << 8) | (audioBuffer[++l0] << 16)) >> 8;
-				}
+	for (i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+		phase += step;
+		while (phase >= 0x10000 && framesUsed < framesAvailable) {
+			int32_t s;
+			if (bytesPerSample == 2) {
+				s = (int16_t)(audioBuffer[pos] | (audioBuffer[pos + 1] << 8));
 			} else {
-				// 24 bit copy.
-				for (i = 0; i < n; i++) {
-					lowSamplePos = (i * speed);
-					l0 = readPositionInBytes + (lowSamplePos * 3);
-					*out++ = (audioBuffer[l0] | (audioBuffer[++l0] << 8) | (audioBuffer[++l0] << 16)) >> 8;
-				}
+				// 24 bit: keep the top 16
+				s = (int16_t)(audioBuffer[pos + 1] | (audioBuffer[pos + 2] << 8));
 			}
-		} else {
-			if(bufferWrap) {
-				// 24 bit copy.
-				for (i = 0; i < n; i++) {
-					lowSamplePos = (i * speed);
-					l0 = readPositionInBytes + ((lowSamplePos * 3) << 1);
-					if (l0 >= AUDIOBUFSIZE) l0 -= AUDIOBUFSIZE;
-					*out++ = (audioBuffer[l0] | (audioBuffer[++l0] << 8) | (audioBuffer[++l0] << 16)) >> 8;
-				}
-			} else {
-				// 24 bit copy.
-				for (i = 0; i < n; i++) {
-					lowSamplePos = (i * speed);
-					l0 = readPositionInBytes + ((lowSamplePos * 3) << 1);
-					*out++ = (audioBuffer[l0] | (audioBuffer[++l0] << 8) | (audioBuffer[++l0] << 16)) >> 8;
-				}
-			}
+			pos += frameBytes;
+			if (pos >= AUDIOBUFSIZE) pos -= AUDIOBUFSIZE;
+			framesUsed++;
+			phase -= 0x10000;
 
+			// S950 record path: band-limit, then store at 12 bits
+			s = saturate16((antiAlias.process(s << 8) + 128) >> 8);
+			s = saturate16((s + half) & mask);
+			history[historyPos] = history[historyPos + SINC_TAPS] = s;
+			historyPos = (historyPos + 1) & (SINC_TAPS - 1);
 		}
+		// Out of data: the file has ended
+		if (phase >= 0x10000) break;
+
+		const int16_t* h = sincTable[phase / (0x10000 / SINC_PHASES)];
+		const int16_t* w = &history[historyPos];
+		int64_t acc = 0;
+		for (uint8_t k = 0; k < SINC_TAPS; k++) {
+			acc += (int32_t)w[k] * h[k];
+		}
+		// Q15 taps -> 16-bit audio with 8 guard bits
+		int32_t y = (int32_t)(acc >> 7);
+		// S950 playback path: reconstruction filter at the playback clock
+		*out++ = saturate16((antiImage.process(y) + 128) >> 8);
 	}
 
-	if (n != AUDIO_BLOCK_SAMPLES) {
+	if (i != AUDIO_BLOCK_SAMPLES) {
 		B(
 			debugHeader();
 			Serial.print("n != BLOCK : ");
-			Serial.println(n);
+			Serial.println(i);
 		);
-
-		// There wasn't enough data earlier to fill the audio block
-
-		bytesUsed = (n * sp) * bytesPerSample;
 		// Fill rest of block with zeros.
-		for (i = n; i < AUDIO_BLOCK_SAMPLES; i++) {
+		for (; i < AUDIO_BLOCK_SAMPLES; i++) {
 			*out++ = 0;
 		}
 		if (!looping)
 			finished = true;
-	} else {
-		bytesUsed = bytesRequired;
 	}
 
-	readPositionInBytes += bytesUsed;
-	readPositionInBytes %= AUDIOBUFSIZE;
-
+	bytesUsed = framesUsed * frameBytes;
+	readPositionInBytes = pos;
 	bytesAvailable -= bytesUsed;
-
 
 	transmit(block);
 	release(block);

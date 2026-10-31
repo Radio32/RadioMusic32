@@ -2,7 +2,7 @@
 
 Custom Eurorack firmware for the [Music Thing Modular Radio Music](https://github.com/TomWhitwell/RadioMusic) hardware, based on a Teensy 3.2.
 
-2-voice sample player with S950-style switched-cap filter emulation, per-voice resonant filter, and chromatic V/oct playback on voice 2.
+2-voice sample player with Akai S900/S950-style 12-bit playback, band-limited (alias-free) pitch shifting, and chromatic V/oct playback on voice 2.
 
 ---
 
@@ -13,7 +13,7 @@ Original Radio Music PCB — no hardware modifications required.
 | Pin | Signal |
 |-----|--------|
 | A9 | Pot 1 — sample index |
-| A7 | Pot 2 — filter cutoff (selected voice) |
+| A7 | Pot 2 — setup pages only |
 | 9 | CV 1 — trigger voice 1 (interrupt) |
 | A6 | CV 2 — trigger voice 2 |
 | A8 | CV 3 — V/oct pitch voice 2 |
@@ -29,12 +29,10 @@ Original Radio Music PCB — no hardware modifications required.
 ### Normal mode
 | Control | Function |
 |---------|----------|
-| Pot 1 | Sample index 0–15 (both voices) |
-| Pot 2 | Filter cutoff for selected voice |
+| Pot 1 | Sample index 0–15 (both voices, LED binary) |
 | CV 1 | Trigger voice 1 |
 | CV 2 | Trigger voice 2 |
-| CV 3 | V/oct pitch for voice 2 |
-| Short press | Toggle selected voice (LED 1 or 2 lit) |
+| CV 3 | V/oct pitch for voice 2 (±24 semitones) |
 | Hold + Pot 1 | Bank select A–P (LED binary) |
 | Release < 1.5s | Confirm bank, back to normal |
 | Hold ≥ 1.5s | Confirm bank + enter setup |
@@ -46,10 +44,13 @@ Original Radio Music PCB — no hardware modifications required.
 
 | Page | LED | Pot 1 | Pot 2 |
 |------|-----|-------|-------|
-| 0 | 1 | Voice 1 volume | Voice 1 decay |
-| 1 | 2 | Voice 2 volume | Voice 2 decay |
+| 0 | 1 | Voice 1 volume | Voice 1 decay (fully clockwise = whole sample) |
+| 1 | 2 | Voice 2 volume | Voice 2 decay (fully clockwise = whole sample) |
 | 2 | 3 | V/oct semitones (−24…+24) | Fine tune (−50…+50 cents) |
-| 3 | 4 | Lo-fi rate (8k–32k Hz) | Lo-fi on/off |
+| 3 | 4 | S950 emulated sample rate (8k–44.1k Hz) | S950 mode on/off |
+
+Defaults at power-up: whole-sample playback, S950 mode on at 32 kHz.
+Total pitch is limited to +2 octaves.
 
 Auto-audition fires on pages 0 and 1 when a pot moves.
 
@@ -58,15 +59,24 @@ Auto-audition fires on pages 0 and 1 when a pot moves.
 ## Signal chain
 
 ```
-Voice 1: SD → envelope → SCF emulation → filter (pot 2, fixed 1.15 resonance) ─┐
-Voice 2: SD → envelope → SCF emulation → filter (pot 2, fixed 1.15 resonance) ─┴→ mix → lo-fi → DAC
+Voice 1: SD → S950 record filter → 12-bit → sinc resampler → S950 playback filter → envelope ─┐
+Voice 2: SD → S950 record filter → 12-bit → sinc resampler → S950 playback filter → envelope ─┴→ mix → DAC
 ```
 
-The SCF emulation stage models a vintage sampler anti-alias/reconstruction path:
-a dynamic 6-pole low-pass (tracking playback Nyquist) plus a fixed smoothing stage.
+Both filters are 6-pole Butterworth low-passes, modelled on the MF6 switched-capacitor
+filter in the S900/S950. All audio processing is fixed-point (Teensy 3.2 has no FPU).
 
-The lo-fi stage then reduces bit depth to 12 bits and decimates playback rate.
-At 32k it is near-clean; lower values add grit, image tones, and alias texture.
+- **Record filter** runs at the file's sample rate, before resampling. With S950 mode on it
+  limits bandwidth to the emulated sample rate, just as the S950's input filter did. Because it
+  runs per source sample, its cutoff follows pitch like the S950's clocked filter. When pitching
+  up it also drops to the output Nyquist, so nothing folds back as alias.
+- **12-bit** quantisation (S950 mode only) is applied to the stored sample, not the mix.
+- **Sinc resampler** (16-tap windowed sinc) converts to the 44.1 kHz output rate with
+  interpolation artefacts around −60 dB or better.
+- **Playback filter** tracks the playback clock when pitching down, removing images the
+  way the S950's reconstruction filter does.
+
+Lower emulated sample rates give a darker, band-limited S950 tone, not aliasing grit.
 
 ---
 
@@ -88,7 +98,7 @@ P/
 - 16 banks: **A–P**
 - 2 voices per bank: **1** (sampler) and **2** (chromatic)
 - Max 16 files per voice per bank
-- Format: **mono 16-bit 32k WAV** (recommended)
+- Format: **mono 16-bit 44.1k WAV** (recommended: matches the output rate, so voice 1 needs no rate conversion). 32k WAV is also accepted.
 
 Use the [web library manager](https://radio32.github.io/RadioMusic32/) to convert and package files.
 
@@ -113,7 +123,7 @@ arduino-cli upload --fqbn teensy:avr:teensy31 --port usb:124000 ./RadioMusic32
 - 16 bank tabs (A–P), 2 voice columns each
 - Drag-and-drop files between banks/voices
 - Per-file preview
-- Convert to mono 16-bit 32k WAV in-browser
+- Convert to mono 16-bit 44.1k WAV in-browser (band-limited resampling)
 - Trim silence + normalize options
 - SD-ready ZIP download
 - Export report with duration, peak, and warnings

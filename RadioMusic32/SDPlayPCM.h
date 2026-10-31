@@ -30,6 +30,7 @@
 #include "AudioStream.h"
 #include <SD.h>
 #include "AudioFileInfo.h"
+#include "S950Filter.h"
 
 // Audio system AUDIO_BLOCK_SAMPLES is 128 and runs at 44k 16bit
 // This means we need 2 BLOCKS of bytes for a block 44k 16
@@ -57,6 +58,12 @@ public:
 	float offset(void);
 
 	virtual void update(void);
+
+	// S950 emulation: band-limit to an emulated sample rate (0 = off) and
+	// store at 12 bits. Call from the main loop, never from audio interrupts.
+	void setEmulation(float sampleRate, bool twelveBit);
+	// Recompute filter cutoffs after playbackSpeed or the file changes.
+	void updateFilters();
 
 	uint8_t playerID = 0;
 
@@ -103,16 +110,26 @@ private:
 
 	int32_t bytesLeftInFile = 0;
 
-	uint32_t l0 = 0;
-	uint32_t lowSamplePos = 0;
 	uint32_t bytesUsed = 0;
 	uint16_t spaceLeftInBuffer = 0;
 	int32_t bytesRequired = 0;
 	int32_t read = 0;
 
-//	// Fixed point phase. 5 bit integer 11 bit fractional
-//	// This is phase in samples, not bytes.
-//	uint32_t phaseIncrement = 0;
+	// Resampler. Fractional read position (16.16) carried across blocks,
+	// windowed-sinc interpolation over the last 16 input frames. History is
+	// written twice so the window is always contiguous at &history[historyPos].
+	uint32_t phase = 0;
+	int16_t history[32] = {0};
+	uint8_t historyPos = 0;
+
+	// Input side: band-limits before interpolation so pitching up can't alias,
+	// and sets the emulated recording bandwidth.
+	S950Filter antiAlias;
+	// Output side: tracks the playback clock so pitching down removes images.
+	S950Filter antiImage;
+	float emulationRate = 0.0f;
+	volatile int32_t quantMask = ~0;
+	volatile int32_t quantHalf = 0;
 };
 
 #endif
