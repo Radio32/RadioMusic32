@@ -100,7 +100,7 @@ P/
 - Max 16 files per voice per bank
 - Format: **mono 16-bit 44.1k WAV** (recommended: matches the output rate, so voice 1 needs no rate conversion). 32k WAV is also accepted.
 
-Use the [web library manager](https://radio32.github.io/RadioMusic32/) to convert and package files.
+Use the [Sample Manager](https://radio32.github.io/RadioMusic32/) to lay out, convert and package files.
 
 ---
 
@@ -116,17 +116,17 @@ arduino-cli upload --fqbn teensy:avr:teensy31 --port usb:124000 ./RadioMusic32
 
 ---
 
-## Web Library Manager
+## Sample Manager
 
 **https://radio32.github.io/RadioMusic32/**
 
-- 16 bank tabs (A–P), 2 voice columns each
-- Drag-and-drop files between banks/voices
-- Per-file preview
-- Convert to mono 16-bit 44.1k WAV in-browser (band-limited resampling)
-- Trim silence + normalize options
-- SD-ready ZIP download
-- Export report with duration, peak, and warnings
+- 16 bank tabs (A–P) with sample counts, 2 voice lists each
+- Reorder samples by dragging; drop on the other voice or on a bank tab to move them there (⌥ to copy)
+- Cut/copy/paste between banks, **Move to…** dialog, undo/redo
+- Open an existing card folder to rearrange it
+- Preview, duration and waveform for each sample
+- Convert to mono 16-bit 44.1k WAV in-browser (band-limited resampling), with trim and normalise options
+- SD-ready ZIP download with an export report
 
 ---
 

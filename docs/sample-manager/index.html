@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RadioMusic32 Sample Manager</title>
+<meta name="description" content="Lay out RadioMusic32 SD cards: 16 banks × 2 voices × 16 samples. Add, preview, reorder and move samples between banks and voices, then download an SD-ready ZIP of mono 16-bit 44.1 kHz WAV files.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css?v=20261031a">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">RadioMusic32 · SD card samples</div>
+    <h1>Sample Manager</h1>
+    <p class="lede">Lay out the card's 16 banks. Add samples, or open an existing card folder, then preview, reorder and move them between voices and banks. Nothing is converted until you download the ZIP.</p>
+  </header>
+
+  <div class="libnote">
+    <p><b>How the module reads the card.</b> Bank folders <code>A</code>–<code>P</code>, each with <code>1/</code> (voice 1, sampler) and <code>2/</code> (voice 2, chromatic), each holding up to 16 files named <code>01.wav</code>–<code>16.wav</code>.</p>
+    <ul>
+      <li><b>Pot 1</b> picks the sample number for both voices at once. If a voice has fewer samples than the pot position, it plays its last one. That's why the order here matters.</li>
+      <li>Files are written as <b>mono 16-bit 44.1 kHz WAV</b>, the module's own rate, so voice 1 needs no rate conversion. Use full-bandwidth sources: the module's S950 mode adds the 12-bit tone and darkening, without aliasing.</li>
+    </ul>
+  </div>
+
+  <section class="bar" aria-label="Card">
+    <div class="btnrow">
+      <label class="btn primary">Add samples…<input type="file" id="addInput" multiple accept="audio/*,.wav,.aif,.aiff,.flac,.mp3,.ogg,.m4a" hidden></label>
+      <label class="btn">Open card folder…<input type="file" id="cardInput" webkitdirectory multiple hidden></label>
+      <span class="sep" aria-hidden="true"></span>
+      <button class="btn" id="undoBtn" title="Undo (⌘Z)" disabled>Undo</button>
+      <button class="btn" id="redoBtn" title="Redo (⇧⌘Z)" disabled>Redo</button>
+    </div>
+    <div class="cardsum" id="cardSum"></div>
+  </section>
+
+  <section class="bench" aria-label="Banks">
+    <nav class="tabs banks" id="bankTabs" aria-label="Banks"></nav>
+    <div class="lpanes" id="panes"></div>
+  </section>
+
+  <section class="export" aria-label="Export">
+    <div class="export-head">
+      <h2>Download</h2>
+      <fieldset class="opts">
+        <label><input type="checkbox" id="trimToggle" checked> Trim silence at start and end</label>
+        <label><input type="checkbox" id="normalizeToggle" checked> Normalise each sample</label>
+      </fieldset>
+    </div>
+    <div class="btnrow">
+      <button class="btn primary" id="downloadZip">Convert &amp; download ZIP</button>
+      <button class="btn danger" id="clearAll">Clear all</button>
+      <progress id="progress" max="100" value="0"></progress>
+    </div>
+    <p class="status" id="statusText" role="status">Ready.</p>
+    <details class="report" id="report" hidden>
+      <summary>Export report <span class="count" id="reportSummary"></span></summary>
+      <div class="report-wrap">
+        <table>
+          <thead><tr><th>Path</th><th>Source</th><th>Length</th><th>Peak in</th><th>Peak out</th><th>Notes</th></tr></thead>
+          <tbody id="reportBody"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <details class="lkeys">
+    <summary>Keys and tips</summary>
+    <div class="lkeys-body">
+      <p><b>Move:</b> drag samples to reorder them, drop them on the other voice, or drop them on a bank tab to move them into that bank. Hold ⌥ (Alt) when dropping to copy instead. On a phone, select and use <b>Move to…</b>.</p>
+      <p><b>Select:</b> click a row; SHIFT + click a range; ⌘ (Ctrl) + click to add or remove one; ⌘A for the whole voice.</p>
+      <p><b>Edit:</b> ⌘X cut · ⌘C copy · ⌘V paste after the selection (switch bank first to move between banks) · ⌥↑ ⌥↓ move up and down · ⌫ remove · ⌘Z undo · SHIFT ⌘Z redo · SPACE play / stop · [ ] previous / next bank.</p>
+      <p><b>Adding:</b> drop audio files from your computer straight onto a voice, at the position you want. A full voice (16) refuses more.</p>
+      <p><b>Existing cards:</b> <b>Open card folder…</b> reads the <code>A/1</code> … <code>P/2</code> folders of a card or a copy of one. Copy the unzipped download back to the card's root, replacing the bank folders.</p>
+    </div>
+  </details>
+
+  <div class="confirm lconfirm" id="dialog" hidden></div>
+
+  <footer class="foot">
+    <a href="https://github.com/Radio32/RadioMusic32">Source</a> ·
+    <a href="https://github.com/TomWhitwell/RadioMusic">Radio Music</a> by Music Thing Modular
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="app.js?v=20261031a"></script>
+</body>
+</html>
